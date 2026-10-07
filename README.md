@@ -135,10 +135,10 @@ local Window = Library.new({
 })
 ```
 
-A janela usa **escala automática**: o tamanho é pensado para 1080p e um `UIScale`
-multiplica tudo proporcionalmente — em telas menores (ex.: notebooks 768p) a
-interface encolhe até 70% e em telas maiores (2K/4K) cresce até 2x, sempre
-acompanhando mudanças de resolução na hora.
+A janela usa **escala automática**: o tamanho base usa como referência 1600×900 e
+um `UIScale` multiplica tudo proporcionalmente. A escala mínima é 1x (para a
+interface não ficar pequena em telas menores) e aumenta até 2x em resoluções
+maiores. A escala acompanha mudanças de resolução na hora.
 
 Métodos: `SetMinimized`, `SetVisible`/`ToggleVisible`, `SetTitle`, `SetSubtitle`, `Destroy`, `Notify`.
 Elementos: `Title`, `Subtitle`, `Paragraph`, `Separator`, `Button`, `Toggle`, `Slider`.

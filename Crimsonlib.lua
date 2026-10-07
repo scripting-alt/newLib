@@ -688,8 +688,9 @@ end
 ----------------------------------------------------------------
 local ICON_SIZE = 16
 local ICON_GAP = 7
+local TEXT_ICON_GAP = 4
 
-local function attachIcon(parent, opts, size)
+local function attachIcon(parent, opts, size, position, gap)
 	if type(opts) ~= "table" then
 		return 0
 	end
@@ -701,7 +702,7 @@ local function attachIcon(parent, opts, size)
 	local iconSize = size or ICON_SIZE
 	create("ImageLabel", {
 		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, 12, 0.5, 0),
+		Position = position or UDim2.new(0, 12, 0.5, 0),
 		Size = UDim2.fromOffset(iconSize, iconSize),
 		BackgroundTransparency = 1,
 		Image = asset,
@@ -709,7 +710,7 @@ local function attachIcon(parent, opts, size)
 		ZIndex = 5,
 		Parent = parent,
 	})
-	return iconSize + ICON_GAP
+	return iconSize + (gap or ICON_GAP)
 end
 
 -- Corpo "vidro" usado por botões, toggles e sliders
@@ -929,12 +930,11 @@ local function clampWindowPosition(position, width)
 end
 
 -- ESCALA RESPONSIVA
--- A janela é desenhada pensando em 1080p; em telas menores ela encolhe
--- (senão fica grande demais) e em telas maiores cresce (senão fica
--- pequena demais). O UIScale multiplica a janela inteira, mantendo
--- todas as proporções internas.
-local BASE_RESOLUTION = Vector2.new(1920, 1080)
-local MIN_UI_SCALE = 0.7
+-- Mantém o tamanho base em resoluções menores que 1600x900 para a janela não
+-- ficar pequena demais; em resoluções maiores, aumenta proporcionalmente até 2x.
+-- O UIScale multiplica a janela inteira, mantendo todas as proporções internas.
+local BASE_RESOLUTION = Vector2.new(1600, 900)
+local MIN_UI_SCALE = 1
 local MAX_UI_SCALE = 2
 
 local function computeUiScale()
@@ -1875,9 +1875,8 @@ function Window:Title(text, icon)
 	opts.IconColor = opts.IconColor or T.RedBright
 
 	local row = self:_row(24)
-	local iconWidth = attachIcon(row, opts, 17)
-	-- o ícone começa em x = 12: o texto precisa dos 12 + ícone + espaço
-	-- (sem isso o texto sobrepõe o ícone)
+	-- Mantém o ícone um pouco mais próximo do texto.
+	local iconWidth = attachIcon(row, opts, 17, nil, TEXT_ICON_GAP)
 	local textOffset = 12 + iconWidth
 
 	local label = create("TextLabel", {
@@ -1902,7 +1901,8 @@ function Window:Subtitle(text, icon)
 	opts.IconColor = opts.IconColor or T.RedBright
 
 	local row = self:_row(18)
-	local iconWidth = attachIcon(row, opts, 14)
+	-- Mantém o ícone um pouco mais próximo do texto.
+	local iconWidth = attachIcon(row, opts, 14, nil, TEXT_ICON_GAP)
 	local textOffset = 12 + iconWidth
 
 	local label = create("TextLabel", {
@@ -2133,7 +2133,8 @@ function Window:Slider(opts)
 
 	local body, bodyStroke = glassBody("Frame", row)
 
-	local iconWidth = attachIcon(body, opts)
+	-- O título do slider fica no topo do controle; alinhe o ícone ao texto.
+	local iconWidth = attachIcon(body, opts, nil, UDim2.new(0, 12, 0, 16))
 
 	create("TextLabel", {
 		Size = UDim2.new(0.6, -(12 + iconWidth), 0, 16),
