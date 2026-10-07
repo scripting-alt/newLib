@@ -105,7 +105,9 @@ end
 local function glassBody(class, parent, props)
 	local T = Library.Theme
 	local base = {
-		Size = UDim2.fromScale(1, 1),
+		-- inset de 1px: a UIStroke (que desenha pra fora) não é cortada pelo ScrollingFrame
+		Size = UDim2.new(1, -2, 1, -2),
+		Position = UDim2.fromOffset(1, 1),
 		BackgroundColor3 = T.Glass,
 		BackgroundTransparency = 0.5,
 		BorderSizePixel = 0,
@@ -259,7 +261,7 @@ function Library.new(config)
 		Parent = titleBar,
 	}, { corner(14) })
 
-	create("Frame", {
+	self._divider = create("Frame", {
 		Size = UDim2.new(1, 0, 0, 1),
 		Position = UDim2.new(0, 0, 1, -1),
 		BackgroundColor3 = T.RedBright,
@@ -512,6 +514,7 @@ function Window:SetMinimized(state)
 	self._minBtn.Text = self._minimized and "+" or "–"
 	self._scroll.Visible = not self._minimized
 	self.Main.Particles.Visible = not self._minimized
+	self._divider.Visible = not self._minimized
 	-- minimizado: fundo da barra com altura exata (cantos de baixo redondos)
 	self._titleBg.Size = UDim2.new(1, 0, 0, self._minimized and TITLE_H or TITLE_H + 20)
 
@@ -763,12 +766,12 @@ function Window:_attachKeybind(row, body, opts, trigger)
 		keyData.Key = opts.Keybind
 	end
 
-	body.Size = UDim2.new(1, -(KEY_W + 6), 1, 0)
+	body.Size = UDim2.new(1, -(KEY_W + 7), 1, -2)
 
 	local keyBtn, keyStroke = glassBody("TextButton", row, {
 		Name = "KeybindButton",
-		Size = UDim2.new(0, KEY_W, 1, 0),
-		Position = UDim2.new(1, -KEY_W, 0, 0),
+		Size = UDim2.new(0, KEY_W, 1, -2),
+		Position = UDim2.new(1, -(KEY_W + 1), 0, 1),
 		Text = "",
 		TextColor3 = T.Text,
 		Font = Enum.Font.GothamBold,
@@ -888,13 +891,24 @@ function Window:Button(opts)
 	local T = Library.Theme
 	local row = self:_row(38)
 
+	-- O texto fica numa label separada: um UIGradient no botão tingiria o texto de vermelho
 	local body, bodyStroke = glassBody("TextButton", row, {
+		Text = "",
+		BackgroundColor3 = opts.Primary and Color3.new(1, 1, 1) or T.Glass,
+		BackgroundTransparency = opts.Primary and 0.15 or 0.5,
+	})
+	local label = create("TextLabel", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
 		Text = opts.Name or "Botão",
-		TextColor3 = T.Text,
+		TextColor3 = Color3.new(1, 1, 1),
+		TextStrokeColor3 = Color3.fromRGB(35, 0, 6),
+		TextStrokeTransparency = 0.7,
 		Font = opts.Primary and Enum.Font.GothamBold or Enum.Font.GothamMedium,
 		TextSize = 13,
-		BackgroundColor3 = opts.Primary and T.Red or T.Glass,
-		BackgroundTransparency = opts.Primary and 0.15 or 0.5,
+		Interactable = false,
+		ZIndex = 4,
+		Parent = body,
 	})
 	if opts.Primary then
 		gradient(T.RedBright, Color3.fromRGB(150, 10, 30), 90).Parent = body
@@ -915,7 +929,7 @@ function Window:Button(opts)
 	local handle = self:_attachKeybind(row, body, opts, fire) or {}
 	handle.Fire = fire
 	handle.SetText = function(text)
-		body.Text = text
+		label.Text = text
 	end
 	return handle
 end
