@@ -1,14 +1,65 @@
 
-local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
-local RunService = game:GetService("RunService")
-local TextService = game:GetService("TextService")
-local HttpService = game:GetService("HttpService")
+-- ================================================================
+--  CrimsonLib
+--  Painel único vermelho com tooltips, keybinds, notificações,
+--  ícones por nome e flags salvas em arquivo.
+--
+--  A interface é criada no CoreGui (gethui -> CoreGui -> PlayerGui).
+--  Os arquivos ficam no workspace do executor:
+--      <workspace>/<Folder>/Icons.lua
+--      <workspace>/<Folder>/ScriptFlags.json
+--      <workspace>/<Folder>/LibrarySettings.json
+-- ================================================================
+
+local cloneRef = (typeof(cloneref) == "function" and cloneref) or function(instance)
+	return instance
+end
+
+local function getService(name)
+	local ok, result = pcall(function()
+		return cloneRef(game:GetService(name))
+	end)
+	if ok and typeof(result) == "Instance" then
+		return result
+	end
+	return game:GetService(name)
+end
+
+local Players = getService("Players")
+local UserInputService = getService("UserInputService")
+local TweenService = getService("TweenService")
+local RunService = getService("RunService")
+local TextService = getService("TextService")
+local HttpService = getService("HttpService")
+
+-- funções que só existem dentro de executores
+local makefolderFn = (typeof(makefolder) == "function" and makefolder) or nil
+local writefileFn = (typeof(writefile) == "function" and writefile) or nil
+local readfileFn = (typeof(readfile) == "function" and readfile) or nil
+local isfileFn = (typeof(isfile) == "function" and isfile) or nil
+local isfolderFn = (typeof(isfolder) == "function" and isfolder) or nil
+local delfileFn = (typeof(delfile) == "function" and delfile) or nil
+local protectGuiFn = (typeof(protect_gui) == "function" and protect_gui)
+	or (typeof(syn) == "table" and typeof(syn.protect_gui) == "function" and syn.protect_gui)
+	or nil
+local loadChunk = (typeof(loadstring) == "function" and loadstring) or load
 
 local Library = {}
 local Window = {}
 Window.__index = Window
+
+-- pasta/arquivos usados no workspace do executor
+Library.Folder = "CrimsonLib"
+Library.Files = {
+	Icons = "Icons.lua",
+	Flags = "ScriptFlags.json",
+	Settings = "LibrarySettings.json",
+}
+Library.IconsUrl = "https://raw.githubusercontent.com/tlredz/Library/refs/heads/main/redz-V5-remake/Utils/Icons.lua"
+Library.Icons = {}
+Library.Debug = false
+Library.SavePosition = true
+Library._flagBinds = {}
 
 ----------------------------------------------------------------
 -- TEMA
@@ -71,6 +122,594 @@ local function pcallCallback(fn, ...)
 	if not ok then
 		warn("[CrimsonLib] erro no callback: " .. tostring(err))
 	end
+end
+
+----------------------------------------------------------------
+-- ONDE A INTERFACE É CRIADA
+-- Prioridade: gethui() -> CoreGui -> PlayerGui (fallback)
+----------------------------------------------------------------
+local guiParentOverride = nil
+local cachedGuiParent = nil
+
+-- Força um container específico (ex: Library:SetGuiParent(game.CoreGui))
+function Library:SetGuiParent(parent)
+	guiParentOverride = parent
+	cachedGuiParent = parent
+end
+
+function Library:GetGuiParent()
+	if guiParentOverride and guiParentOverride.Parent then
+		return guiParentOverride
+	end
+	if cachedGuiParent and cachedGuiParent.Parent then
+		return cachedGuiParent
+	end
+
+	local holder = nil
+
+	if typeof(gethui) == "function" then
+		local ok, result = pcall(gethui)
+		if ok and typeof(result) == "Instance" then
+			holder = result
+		end
+	end
+
+	if not holder then
+		local ok, result = pcall(function()
+			return cloneRef(game:GetService("CoreGui"))
+		end)
+		if ok and typeof(result) == "Instance" then
+			holder = result
+		else
+			-- alguns executores não deixam clonar o CoreGui
+			local ok2, result2 = pcall(function()
+				return game:GetService("CoreGui")
+			end)
+			if ok2 and typeof(result2) == "Instance" then
+				holder = result2
+			end
+		end
+	end
+
+	if not holder then
+		holder = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+			or Players.LocalPlayer:WaitForChild("PlayerGui", 5)
+	end
+
+	cachedGuiParent = holder
+	return holder
+end
+
+-- Cria a ScreenGui já dentro do CoreGui (ou do container escolhido)
+local function mountScreenGui(name, props)
+	props = props or {}
+	props.Name = name
+	props.ResetOnSpawn = false
+	props.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+	local parent = Library:GetGuiParent()
+	if parent then
+		local old = parent:FindFirstChild(name)
+		if old then
+			old:Destroy()
+		end
+	end
+
+	local gui = create("ScreenGui", props)
+
+	if protectGuiFn then
+		pcall(protectGuiFn, gui)
+	end
+
+	local ok = pcall(function()
+		gui.Parent = parent
+	end)
+	if not ok or gui.Parent ~= parent then
+		gui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+	end
+
+	return gui
+end
+
+----------------------------------------------------------------
+-- ARQUIVOS NO WORKSPACE DO EXECUTOR
+----------------------------------------------------------------
+local function folderPath()
+	return (type(Library.Folder) == "string" and Library.Folder ~= "" and Library.Folder) or "CrimsonLib"
+end
+
+local function filePath(name)
+	return folderPath() .. "/" .. name
+end
+
+local function ensureFolder()
+	if not makefolderFn then
+		return
+	end
+	local folder = folderPath()
+	if isfolderFn and isfolderFn(folder) then
+		return
+	end
+	pcall(makefolderFn, folder)
+end
+
+local function writeRaw(name, content)
+	if not writefileFn then
+		return false
+	end
+	ensureFolder()
+	return pcall(writefileFn, filePath(name), content)
+end
+
+local function readRaw(name)
+	if not readfileFn then
+		return nil
+	end
+	if isfileFn and not isfileFn(filePath(name)) then
+		return nil
+	end
+	local ok, data = pcall(readfileFn, filePath(name))
+	if ok and type(data) == "string" then
+		return data
+	end
+	return nil
+end
+
+local function deleteRaw(name)
+	if not delfileFn then
+		return false
+	end
+	return pcall(delfileFn, filePath(name))
+end
+
+function Library:GetFilePath(name)
+	return filePath(name)
+end
+
+function Library:HasFileSupport()
+	return writefileFn ~= nil and readfileFn ~= nil
+end
+
+function Library:WriteFile(name, content)
+	assert(type(name) == "string", "[CrimsonLib] WriteFile: nome do arquivo precisa ser string")
+	assert(type(content) == "string", "[CrimsonLib] WriteFile: conteúdo precisa ser string")
+	return writeRaw(name, content)
+end
+
+function Library:ReadFile(name)
+	assert(type(name) == "string", "[CrimsonLib] ReadFile: nome do arquivo precisa ser string")
+	return readRaw(name)
+end
+
+function Library:DeleteFile(name)
+	assert(type(name) == "string", "[CrimsonLib] DeleteFile: nome do arquivo precisa ser string")
+	return deleteRaw(name)
+end
+
+function Library:FileExists(name)
+	if not isfileFn then
+		return false
+	end
+	return isfileFn(filePath(name))
+end
+
+----------------------------------------------------------------
+-- JSON + SAVE COM DEBOUNCE
+----------------------------------------------------------------
+local function jsonEncode(data)
+	local ok, result = pcall(function()
+		return HttpService:JSONEncode(data)
+	end)
+	if ok and type(result) == "string" then
+		return result
+	end
+	if Library.Debug then
+		warn("[CrimsonLib] falha ao codificar JSON: " .. tostring(result))
+	end
+	return nil
+end
+
+local function jsonDecode(source)
+	if type(source) ~= "string" or source == "" then
+		return nil
+	end
+	local ok, result = pcall(function()
+		return HttpService:JSONDecode(source)
+	end)
+	if ok and type(result) == "table" then
+		return result
+	end
+	if Library.Debug then
+		warn("[CrimsonLib] falha ao decodificar JSON: " .. tostring(result))
+	end
+	return nil
+end
+
+-- grava no máximo uma vez a cada intervalo, mesmo com muitas mudanças
+local function makeSaver(write)
+	local pending = false
+	return {
+		Queue = function()
+			if pending then
+				return
+			end
+			pending = true
+			task.delay(0.5, function()
+				pending = false
+				write()
+			end)
+		end,
+		Flush = write,
+	}
+end
+
+----------------------------------------------------------------
+-- FLAGS  (ScriptFlags.json)
+-- Guarda o valor dos toggles/sliders e a tecla dos keybinds.
+-- Uso:  Win:Toggle({ Name = "Auto Farm", Flag = "AutoFarm", Default = false })
+--       Library:GetFlag("AutoFarm")  /  Library:SetFlag("AutoFarm", true)
+-- A tecla do keybind de uma flag fica em "<Flag>_Key".
+----------------------------------------------------------------
+local FLAG_TYPES = { number = true, string = true, boolean = true, table = true }
+local FlagData = {}
+
+Library.Flags = FlagData
+
+local SaveFlags = makeSaver(function()
+	local data = jsonEncode(FlagData)
+	if data then
+		writeRaw(Library.Files.Flags, data)
+	end
+end)
+
+local FlagsLoaded = false
+
+local function ensureFlags()
+	if FlagsLoaded then
+		return
+	end
+	FlagsLoaded = true
+	local data = jsonDecode(readRaw(Library.Files.Flags))
+	if data then
+		for key, value in pairs(data) do
+			FlagData[key] = value
+		end
+	end
+end
+
+function Library:LoadFlags()
+	FlagsLoaded = false
+	table.clear(FlagData)
+	ensureFlags()
+end
+
+function Library:SetFlag(name, value)
+	assert(type(name) == "string", "[CrimsonLib] SetFlag: o nome da flag precisa ser string")
+	if value ~= nil and not FLAG_TYPES[type(value)] then
+		error("[CrimsonLib] SetFlag: tipo de valor não suportado (" .. type(value) .. ")", 2)
+	end
+
+	ensureFlags()
+	FlagData[name] = value
+	SaveFlags:Queue()
+
+	-- mantém o elemento da interface em sincronia com a flag
+	local bind = Library._flagBinds[name]
+	if bind then
+		pcall(bind, value)
+	end
+end
+
+function Library:GetFlag(name, default)
+	ensureFlags()
+	local value = FlagData[name]
+	if value == nil then
+		return default
+	end
+	return value
+end
+
+function Library:HasFlag(name)
+	ensureFlags()
+	return FlagData[name] ~= nil
+end
+
+-- usado pelos elementos: mantém a UI em sincronia com SetFlag()
+function Library:_registerFlag(name, setter)
+	if type(name) ~= "string" or type(setter) ~= "function" then
+		return
+	end
+	Library._flagBinds[name] = setter
+end
+
+function Library:GetFlags()
+	ensureFlags()
+	return FlagData
+end
+
+function Library:SaveFlags()
+	SaveFlags:Flush()
+end
+
+function Library:DeleteFlags()
+	table.clear(FlagData) -- os elementos continuam existindo, então os binds ficam
+	deleteRaw(Library.Files.Flags)
+	FlagsLoaded = true
+end
+
+-- keybinds: guardados como string (Enum.KeyCode.Name)
+function Library:SetKeyFlag(flag, key)
+	if type(flag) ~= "string" then
+		return
+	end
+	self:SetFlag(flag .. "_Key", (typeof(key) == "EnumItem" and key.Name) or nil)
+end
+
+function Library:GetKeyFlag(flag, default)
+	if type(flag) ~= "string" then
+		return default
+	end
+	local name = self:GetFlag(flag .. "_Key")
+	if type(name) ~= "string" then
+		return default
+	end
+	local ok, key = pcall(function()
+		return Enum.KeyCode[name]
+	end)
+	if ok and typeof(key) == "EnumItem" then
+		return key
+	end
+	return default
+end
+
+----------------------------------------------------------------
+-- SETTINGS  (LibrarySettings.json)
+-- Posição da janela, estado minimizado etc.
+----------------------------------------------------------------
+local SettingData = {}
+local SettingsLoaded = false
+
+local SaveSettings = makeSaver(function()
+	local data = jsonEncode(SettingData)
+	if data then
+		writeRaw(Library.Files.Settings, data)
+	end
+end)
+
+local function ensureSettings()
+	if SettingsLoaded then
+		return
+	end
+	SettingsLoaded = true
+	local data = jsonDecode(readRaw(Library.Files.Settings))
+	if data then
+		for key, value in pairs(data) do
+			SettingData[key] = value
+		end
+	end
+end
+
+function Library:SetSetting(key, value)
+	assert(type(key) == "string", "[CrimsonLib] SetSetting: a chave precisa ser string")
+	ensureSettings()
+	SettingData[key] = value
+	SaveSettings:Queue()
+end
+
+function Library:GetSetting(key, default)
+	ensureSettings()
+	local value = SettingData[key]
+	if value == nil then
+		return default
+	end
+	return value
+end
+
+function Library:SaveSettings()
+	SaveSettings:Flush()
+end
+
+function Library:LoadSettings()
+	SettingsLoaded = false
+	table.clear(SettingData)
+	ensureSettings()
+end
+
+function Library:DeleteSettings()
+	table.clear(SettingData)
+	deleteRaw(Library.Files.Settings)
+	SettingsLoaded = true
+end
+
+----------------------------------------------------------------
+-- ÍCONES POR NOME  (Icons.lua)
+-- Icon = "sword" | "Sword" | 123456 | "rbxassetid://123456"
+----------------------------------------------------------------
+local ICON_SEPARATORS = {}
+do
+	for _, char in ipairs({ " ", "_", "-", ".", ",", "/", "\\", "(", ")", "[", "]", ":", ";", "'", '"' }) do
+		ICON_SEPARATORS[char] = true
+	end
+end
+
+local IconsLoaded = false
+
+local function normalizeIconName(name)
+	return (string.lower(name):gsub(".", function(char)
+		return ICON_SEPARATORS[char] and "" or char
+	end))
+end
+
+local function importIcons(data)
+	if type(data) ~= "table" then
+		return false
+	end
+	local count = 0
+	for key, value in pairs(data) do
+		if type(key) == "string" then
+			local id = type(value) == "string" and tonumber(value) or value
+			if type(id) == "number" then
+				Library.Icons[normalizeIconName(key)] = id
+				count += 1
+			end
+		end
+	end
+	IconsLoaded = count > 0
+	return IconsLoaded
+end
+
+local function httpGet(url)
+	if typeof(game) == "Instance" and typeof(game.HttpGet) == "function" then
+		local ok, result = pcall(function()
+			return game:HttpGet(url)
+		end)
+		if ok and type(result) == "string" and #result > 0 then
+			return result
+		end
+	end
+	local ok, result = pcall(function()
+		return HttpService:HttpGetAsync(url)
+	end)
+	if ok and type(result) == "string" and #result > 0 then
+		return result
+	end
+	return nil
+end
+
+-- Carrega os ícones: primeiro o cache em arquivo, depois o GitHub
+-- (quando baixa, salva o arquivo para as próximas execuções)
+function Library:LoadIcons(force)
+	if IconsLoaded and not force then
+		return true
+	end
+
+	if not force then
+		local cached = readRaw(self.Files.Icons)
+		if cached and loadChunk then
+			local chunk = loadChunk(cached)
+			if chunk then
+				local ok, result = pcall(chunk)
+				if ok and importIcons(result) then
+					return true
+				end
+			end
+		end
+	end
+
+	local source = httpGet(self.IconsUrl)
+	if source and loadChunk then
+		local chunk = loadChunk(source)
+		if chunk then
+			local ok, result = pcall(chunk)
+			if ok and importIcons(result) then
+				writeRaw(self.Files.Icons, source)
+				return true
+			end
+		end
+	end
+
+	if Library.Debug then
+		warn("[CrimsonLib] não foi possível carregar a lista de ícones")
+	end
+	return false
+end
+
+-- força o download de uma lista nova de ícones
+function Library:RefreshIcons()
+	return self:LoadIcons(true)
+end
+
+-- ícones avulsos, sem precisar do arquivo
+function Library:AddIcon(name, id)
+	if type(name) ~= "string" then
+		return
+	end
+	local value = type(id) == "string" and tonumber(id) or id
+	if type(value) == "number" then
+		Library.Icons[normalizeIconName(name)] = value
+	end
+end
+
+function Library:AddIcons(list)
+	if type(list) ~= "table" then
+		return
+	end
+	for name, id in pairs(list) do
+		self:AddIcon(name, id)
+	end
+end
+
+function Library:GetIconList()
+	local names = {}
+	for name in pairs(Library.Icons) do
+		table.insert(names, name)
+	end
+	table.sort(names)
+	return names
+end
+
+-- Converte o que o usuário passou em um asset utilizável (ou nil)
+function Library:GetIcon(icon)
+	if icon == nil then
+		return nil
+	end
+	if typeof(icon) == "number" then
+		return "rbxassetid://" .. tostring(icon)
+	end
+	if type(icon) ~= "string" or icon == "" then
+		return nil
+	end
+	if icon:sub(1, 13) == "rbxassetid://" or icon:sub(1, 9) == "rbxasset://" or icon:sub(1, 7) == "http://" or icon:sub(1, 8) == "https://" then
+		return icon
+	end
+
+	self:LoadIcons()
+
+	local key = normalizeIconName(icon)
+	local id = Library.Icons[key]
+	if id then
+		return "rbxassetid://" .. tostring(id)
+	end
+	-- busca parcial: "swordshield" encontra "sword" etc.
+	for name, value in pairs(Library.Icons) do
+		if name:find(key, 1, true) then
+			return "rbxassetid://" .. tostring(value)
+		end
+	end
+	if Library.Debug then
+		warn("[CrimsonLib] ícone não encontrado: " .. tostring(icon))
+	end
+	return nil
+end
+
+----------------------------------------------------------------
+-- ÍCONE DENTRO DOS ELEMENTOS
+-- Devolve a largura ocupada (0 quando não há ícone)
+----------------------------------------------------------------
+local ICON_SIZE = 16
+local ICON_GAP = 7
+
+local function attachIcon(parent, opts, size)
+	if type(opts) ~= "table" then
+		return 0
+	end
+	local asset = Library:GetIcon(opts.Icon)
+	if not asset then
+		return 0
+	end
+
+	local iconSize = size or ICON_SIZE
+	create("ImageLabel", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 12, 0.5, 0),
+		Size = UDim2.fromOffset(iconSize, iconSize),
+		BackgroundTransparency = 1,
+		Image = asset,
+		ImageColor3 = opts.IconColor or Library.Theme.RedSoft,
+		ZIndex = 5,
+		Parent = parent,
+	})
+	return iconSize + ICON_GAP
 end
 
 -- Corpo "vidro" usado por botões, toggles e sliders
@@ -158,17 +797,10 @@ local function ensureTooltip()
 	end
 
 	local T = Library.Theme
-	local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
-	local old = playerGui:FindFirstChild("CrimsonLib_Tooltip")
-	if old then old:Destroy() end
 
-	local gui = create("ScreenGui", {
-		Name = "CrimsonLib_Tooltip",
-		ResetOnSpawn = false,
+	local gui = mountScreenGui("CrimsonLib_Tooltip", {
 		IgnoreGuiInset = true, -- posição igual à do mouse
 		DisplayOrder = 200,
-		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-		Parent = playerGui,
 	})
 
 	local frame = create("Frame", {
@@ -278,10 +910,74 @@ end
 ----------------------------------------------------------------
 -- CRIAR JANELA
 ----------------------------------------------------------------
+local function viewportSize()
+	local ok, size = pcall(function()
+		return workspace.CurrentCamera.ViewportSize
+	end)
+	if ok and typeof(size) == "Vector2" and size.X > 0 then
+		return size
+	end
+	return Vector2.new(1280, 720)
+end
+
+-- impede que a janela reapareça fora da tela (mudou a resolução etc.)
+local function clampWindowPosition(position, width)
+	local view = viewportSize()
+	local x = math.clamp(position.X.Offset, -width + 70, view.X - 70)
+	local y = math.clamp(position.Y.Offset, 0, math.max(0, view.Y - 70))
+	return UDim2.new(position.X.Scale, x, position.Y.Scale, y)
+end
+
+
+--[[
+	Library.new({
+		Title = "CRIMSON PANEL",      -- título da barra
+		Subtitle = "v1.0",            -- subtítulo (opcional)
+		Name = "CrimsonLib",          -- nome da ScreenGui
+		Folder = "CrimsonLib",        -- pasta no workspace do executor
+		Icon = "flame",               -- ícone na barra de título (por nome ou id)
+		Width = 300,
+		MaxHeight = 360,
+		ToggleKey = Enum.KeyCode.RightShift,
+		Parent = nil,                 -- força outro container (padrão: CoreGui)
+		Particles = true,
+		SavePosition = true,          -- salva/minimizado em LibrarySettings.json
+		PreloadIcons = true,          -- baixa a lista de ícones antes de montar a UI
+		Debug = false,
+	})
+]]
 function Library.new(config)
 	config = config or {}
 	local T = Library.Theme
 	local self = setmetatable({}, Window)
+
+	-- pasta onde ficam Icons.lua / ScriptFlags.json / LibrarySettings.json
+	if type(config.Folder) == "string" and config.Folder ~= "" and config.Folder ~= Library.Folder then
+		Library.Folder = config.Folder
+		if FlagsLoaded then
+			Library:LoadFlags()
+		end
+		if SettingsLoaded then
+			Library:LoadSettings()
+		end
+	end
+	if config.Parent then
+		Library:SetGuiParent(config.Parent)
+	end
+	if config.Debug ~= nil then
+		Library.Debug = config.Debug and true or false
+	end
+	if config.SavePosition ~= nil then
+		Library.SavePosition = config.SavePosition and true or false
+	end
+	if type(config.IconsUrl) == "string" and config.IconsUrl ~= "" then
+		Library.IconsUrl = config.IconsUrl
+	end
+
+	-- ícones: usa o cache do arquivo quando existe, senão baixa e salva
+	if config.PreloadIcons ~= false then
+		Library:LoadIcons()
+	end
 
 	self._conns = {}
 	self._binds = {}
@@ -301,19 +997,17 @@ function Library.new(config)
 	local WIDTH = self._width
 	local guiName = config.Name or "CrimsonLib"
 
-	local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
-	local old = playerGui:FindFirstChild(guiName)
-	if old then old:Destroy() end
-
-	local screenGui = create("ScreenGui", {
-		Name = guiName,
-		ResetOnSpawn = false,
-		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-		Parent = playerGui,
-	})
+	-- ScreenGui criada no CoreGui (gethui -> CoreGui -> PlayerGui)
+	local screenGui = mountScreenGui(guiName, {})
 	self.Gui = screenGui
 
+	-- posição: última salva em LibrarySettings.json, senão o centro da tela
 	local startPos = UDim2.new(0.5, -WIDTH / 2, 0.5, -self._maxHeight / 2)
+	local savedPos = Library.SavePosition and Library:GetSetting("Position")
+	if type(savedPos) == "table" and type(savedPos[2]) == "number" and type(savedPos[4]) == "number" then
+		startPos = UDim2.new(savedPos[1] or 0, savedPos[2], savedPos[3] or 0, savedPos[4])
+	end
+	startPos = clampWindowPosition(startPos, WIDTH)
 
 	local main = create("Frame", {
 		Name = "Main",
@@ -411,6 +1105,22 @@ function Library.new(config)
 		ZIndex = 6,
 		Parent = titleBar,
 	}, { corner(4) })
+
+	-- ícone da barra de título (nome do ícone ou id)
+	local windowIcon = Library:GetIcon(config.Icon)
+	if windowIcon then
+		dot.Visible = false
+		create("ImageLabel", {
+			Size = UDim2.fromOffset(16, 16),
+			Position = UDim2.new(0, 12, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			BackgroundTransparency = 1,
+			Image = windowIcon,
+			ImageColor3 = config.IconColor or T.RedBright,
+			ZIndex = 6,
+			Parent = titleBar,
+		})
+	end
 
 	task.spawn(function()
 		while dot.Parent do
@@ -607,7 +1317,10 @@ function Library.new(config)
 			startFramePos = main.Position
 			input.Changed:Connect(function()
 				if input.UserInputState == Enum.UserInputState.End then
-					dragging = false
+					if dragging then
+						dragging = false
+						self:_savePosition()
+					end
 				end
 			end)
 		end
@@ -646,6 +1359,15 @@ function Library.new(config)
 	-- Animação de entrada
 	tween(main, { Position = startPos, BackgroundTransparency = 0.28 }, 0.4, Enum.EasingStyle.Quart)
 
+	-- volta minimizado se era assim que estava na última execução
+	if Library.SavePosition and Library:GetSetting("Minimized") == true then
+		task.defer(function()
+			if not self._destroyed then
+				self:SetMinimized(true)
+			end
+		end)
+	end
+
 	return self
 end
 
@@ -678,9 +1400,35 @@ function Window:_refresh()
 	end)
 end
 
+-- Guarda a posição da janela em LibrarySettings.json
+-- atalhos: Win:SetFlag / Win:GetFlag usam as flags globais
+function Window:SetFlag(name, value)
+	return Library:SetFlag(name, value)
+end
+
+function Window:GetFlag(name, default)
+	return Library:GetFlag(name, default)
+end
+
+function Window:GetKeyFlag(flag, default)
+	return Library:GetKeyFlag(flag, default)
+end
+
+-- Guarda a posição da janela em LibrarySettings.json
+function Window:_savePosition()
+	if not Library.SavePosition or self._destroyed then
+		return
+	end
+	local position = self.Main.Position
+	Library:SetSetting("Position", { position.X.Scale, position.X.Offset, position.Y.Scale, position.Y.Offset })
+end
+
 function Window:SetMinimized(state)
 	self._minimized = state and true or false
 	Library.HideTooltip()
+	if Library.SavePosition then
+		Library:SetSetting("Minimized", self._minimized)
+	end
 	self._minBtn.Text = self._minimized and "+" or "–"
 	self._scroll.Visible = not self._minimized
 	self.Main.Particles.Visible = not self._minimized
@@ -760,6 +1508,10 @@ function Window:Destroy(animated)
 	if self._destroyed then return end
 	self._destroyed = true
 	Library.HideTooltip()
+
+	-- grava no disco o que ainda estiver pendente
+	Library:SaveFlags()
+	Library:SaveSettings()
 
 	for _, c in ipairs(self._conns) do
 		c:Disconnect()
@@ -995,6 +1747,15 @@ function Window:_attachKeybind(row, body, opts, trigger)
 		keyData.Key = opts.Keybind
 	end
 
+	-- a tecla é salva em "<Flag>_Key" dentro de ScriptFlags.json
+	local flag = type(opts.Flag) == "string" and opts.Flag or nil
+	if flag then
+		local savedKey = Library:GetKeyFlag(flag)
+		if savedKey then
+			keyData.Key = savedKey
+		end
+	end
+
 	body.Size = UDim2.new(1, -(KEY_W + 7), 1, -2)
 
 	local keyBtn, keyStroke = glassBody("TextButton", row, {
@@ -1030,6 +1791,9 @@ function Window:_attachKeybind(row, body, opts, trigger)
 
 	local function changed(key)
 		updateText()
+		if flag then
+			Library:SetKeyFlag(flag, key)
+		end
 		pcallCallback(opts.KeybindChanged, key)
 	end
 
@@ -1053,34 +1817,47 @@ end
 ----------------------------------------------------------------
 -- ELEMENTOS PÚBLICOS
 ----------------------------------------------------------------
-function Window:Title(text)
+-- Aceita "texto", ("texto", "icone") ou ({ Text = "...", Icon = "..." })
+function Window:Title(text, icon)
 	local T = Library.Theme
+	local opts = type(text) == "table" and text or { Text = text, Icon = icon }
+
+	local row = self:_row(24)
+	local iconWidth = attachIcon(row, opts, 17)
+
 	local label = create("TextLabel", {
-		Size = UDim2.new(1, 0, 0, 24),
+		Size = UDim2.new(1, -iconWidth, 0, 24),
+		Position = UDim2.new(0, iconWidth, 0, 0),
 		BackgroundTransparency = 1,
-		Text = text,
+		Text = opts.Text or opts.Name or "",
 		TextColor3 = T.Text,
 		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
 		Font = Enum.Font.GothamBlack,
 		TextSize = 17,
-		LayoutOrder = self:_nextOrder(),
-		Parent = self._scroll,
+		Parent = row,
 	})
 	return { Set = function(v) label.Text = v end }
 end
 
-function Window:Subtitle(text)
+function Window:Subtitle(text, icon)
 	local T = Library.Theme
+	local opts = type(text) == "table" and text or { Text = text, Icon = icon }
+
+	local row = self:_row(18)
+	local iconWidth = attachIcon(row, opts, 14)
+
 	local label = create("TextLabel", {
-		Size = UDim2.new(1, 0, 0, 18),
+		Size = UDim2.new(1, -iconWidth, 0, 18),
+		Position = UDim2.new(0, iconWidth, 0, 0),
 		BackgroundTransparency = 1,
-		Text = text,
+		Text = opts.Text or opts.Name or "",
 		TextColor3 = T.RedSoft,
 		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
 		Font = Enum.Font.GothamBold,
 		TextSize = 12,
-		LayoutOrder = self:_nextOrder(),
-		Parent = self._scroll,
+		Parent = row,
 	})
 	return { Set = function(v) label.Text = v end }
 end
@@ -1140,6 +1917,16 @@ function Window:Button(opts)
 		ZIndex = 4,
 		Parent = body,
 	})
+
+	-- ícone (nome ou id): o texto continua centralizado
+	local buttonIconWidth = attachIcon(body, opts)
+	if buttonIconWidth > 0 then
+		create("UIPadding", {
+			PaddingLeft = UDim.new(0, buttonIconWidth),
+			PaddingRight = UDim.new(0, buttonIconWidth),
+			Parent = label,
+		})
+	end
 	if opts.Primary then
 		gradient(T.RedBright, Color3.fromRGB(150, 10, 30), 90).Parent = body
 		bodyStroke.Transparency = 0.2
@@ -1172,9 +1959,11 @@ function Window:Toggle(opts)
 
 	local body, bodyStroke = glassBody("Frame", row)
 
+	local iconWidth = attachIcon(body, opts)
+
 	create("TextLabel", {
-		Size = UDim2.new(1, -64, 1, 0),
-		Position = UDim2.new(0, 12, 0, 0),
+		Size = UDim2.new(1, -(64 + iconWidth), 1, 0),
+		Position = UDim2.new(0, 12 + iconWidth, 0, 0),
 		BackgroundTransparency = 1,
 		Text = opts.Name or "Toggle",
 		TextColor3 = T.Text,
@@ -1216,7 +2005,15 @@ function Window:Toggle(opts)
 	hookHover(hit, body, bodyStroke, false)
 	attachTooltip(hit, opts.Tooltip)
 
-	local state = false
+	-- valor inicial: Default, ou o que estiver salvo na flag
+	local flag = type(opts.Flag) == "string" and opts.Flag or nil
+	local state = opts.Default and true or false
+	if flag then
+		local saved = Library:GetFlag(flag)
+		if type(saved) == "boolean" then
+			state = saved
+		end
+	end
 
 	local function render(animated)
 		local info = animated and 0.18 or 0
@@ -1235,6 +2032,9 @@ function Window:Toggle(opts)
 		state = value and true or false
 		render(true)
 		if not silent then
+			if flag then
+				Library:SetFlag(flag, state)
+			end
 			pcallCallback(opts.Callback, state)
 		end
 	end
@@ -1245,8 +2045,16 @@ function Window:Toggle(opts)
 
 	hit.MouseButton1Click:Connect(flip)
 
-	state = opts.Default and true or false
 	render(false)
+
+	-- SetFlag() externo também mexe no toggle da interface
+	if flag then
+		Library:_registerFlag(flag, function(value)
+			if type(value) == "boolean" and value ~= state then
+				set(value, true)
+			end
+		end)
+	end
 
 	local handle = self:_attachKeybind(row, body, opts, flip) or {}
 	handle.Set = set
@@ -1267,9 +2075,11 @@ function Window:Slider(opts)
 
 	local body, bodyStroke = glassBody("Frame", row)
 
+	local iconWidth = attachIcon(body, opts)
+
 	create("TextLabel", {
-		Size = UDim2.new(0.6, -12, 0, 16),
-		Position = UDim2.new(0, 12, 0, 8),
+		Size = UDim2.new(0.6, -(12 + iconWidth), 0, 16),
+		Position = UDim2.new(0, 12 + iconWidth, 0, 8),
 		BackgroundTransparency = 1,
 		Text = opts.Name or "Slider",
 		TextColor3 = T.Text,
@@ -1340,6 +2150,7 @@ function Window:Slider(opts)
 	attachTooltip(hit, opts.Tooltip)
 
 	local value = min
+	local flag = type(opts.Flag) == "string" and opts.Flag or nil
 
 	local function snap(v)
 		v = math.floor(v / inc + 0.5) * inc
@@ -1358,8 +2169,13 @@ function Window:Slider(opts)
 		local changedValue = newValue ~= value
 		value = newValue
 		render()
-		if changedValue and not silent then
-			pcallCallback(opts.Callback, value)
+		if not silent then
+			if flag then
+				Library:SetFlag(flag, value)
+			end
+			if changedValue then
+				pcallCallback(opts.Callback, value)
+			end
 		end
 	end
 
@@ -1398,14 +2214,31 @@ function Window:Slider(opts)
 		end
 	end))
 
+	-- valor inicial: Default, ou o que estiver salvo na flag
 	value = snap(opts.Default or min)
+	if flag then
+		local saved = Library:GetFlag(flag)
+		if type(saved) == "number" then
+			value = snap(saved)
+		end
+	end
 	render()
+
+	-- SetFlag() externo também mexe no slider da interface
+	if flag then
+		Library:_registerFlag(flag, function(newValue)
+			if type(newValue) == "number" and newValue ~= value then
+				set(newValue, true)
+			end
+		end)
+	end
 
 	return {
 		Set = set,
 		Get = function()
 			return value
 		end,
+		Flag = flag,
 	}
 end
 
@@ -1441,16 +2274,8 @@ local function ensureNotifier()
 		return notifier
 	end
 
-	local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
-	local old = playerGui:FindFirstChild("CrimsonLib_Notifications")
-	if old then old:Destroy() end
-
-	local gui = create("ScreenGui", {
-		Name = "CrimsonLib_Notifications",
-		ResetOnSpawn = false,
+	local gui = mountScreenGui("CrimsonLib_Notifications", {
 		DisplayOrder = 100,
-		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-		Parent = playerGui,
 	})
 
 	local holder = create("Frame", {
@@ -1530,14 +2355,14 @@ function Library.Notify(opts)
 		create("UIStroke", { Color = kind.color, Thickness = 1.2, Transparency = 0.35 }),
 	})
 
-	if opts.Icon then
-		local image = type(opts.Icon) == "number" and ("rbxassetid://" .. opts.Icon) or tostring(opts.Icon)
+	local notifyIcon = Library:GetIcon(opts.Icon)
+	if notifyIcon then
 		create("ImageLabel", {
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			Position = UDim2.fromScale(0.5, 0.5),
 			Size = UDim2.fromOffset(20, 20),
 			BackgroundTransparency = 1,
-			Image = image,
+			Image = notifyIcon,
 			ImageColor3 = opts.IconColor or Color3.new(1, 1, 1),
 			Parent = iconHolder,
 		})
