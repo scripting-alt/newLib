@@ -124,8 +124,11 @@ local Window = Library.new({
 	Name = "CrimsonLib",      -- nome da ScreenGui
 	Folder = "CrimsonLib",    -- pasta dos arquivos
 	Icon = "flame",           -- ícone da barra de título
-	Width = 300,              -- largura de referência (layout 1280×720)
-	MaxHeight = 360,          -- altura máxima de referência
+	Width = 300,              -- largura lógica da janela
+	MaxHeight = 360,          -- altura lógica máxima
+	Scale = 1.10,             -- zoom geral: 1 = padrão, 1.10 = +10%
+	MinScale = 0.95,          -- mínimo automático para manter leitura
+	MaxScale = 1.35,          -- máximo automático em telas grandes
 	ToggleKey = Enum.KeyCode.RightShift,
 	Parent = nil,             -- força outro container
 	Particles = true,
@@ -135,13 +138,28 @@ local Window = Library.new({
 })
 ```
 
-A janela usa dimensões em `Scale` (`UDim2`) com layout de referência 1280×720 e
-`UIAspectRatioConstraint` para manter a proporção em diferentes formatos de tela.
-O container se ajusta ao espaço disponível e um `UIScale` acompanha o tamanho
-efetivo da janela para manter textos e controles proporcionais, sem consultar
-`CurrentCamera.ViewportSize`.
+A janela mede o espaço real do `ScreenGui` e aplica o mesmo `UIScale` ao frame e
+seus conteúdos. A escala acompanha telas grandes, mas preserva um mínimo de leitura
+por padrão (`0.95`); em telas muito pequenas, ela só diminui o necessário para a
+janela caber inteira. Não consulta `CurrentCamera.ViewportSize`.
 
-Métodos: `SetMinimized`, `SetVisible`/`ToggleVisible`, `SetTitle`, `SetSubtitle`, `Destroy`, `Notify`.
+### Escala e legibilidade
+
+Use `Scale` para aumentar ou reduzir toda a interface — textos, ícones e controles
+continuam proporcionais. `1` é o padrão; `1.15` aumenta 15%. Também é possível
+mudar isso depois de criar a janela:
+
+```lua
+Window:SetScale(1.15)
+print(Window:GetScale()) -- escala efetiva, já limitada pelo espaço disponível
+```
+
+`MinScale` e `MaxScale` controlam apenas a faixa automática da responsividade.
+Para ajustar um componente específico, `Title`, `Subtitle`, `Button`, `Toggle` e
+`Slider` aceitam `TextSize` (e `Slider` aceita `ValueTextSize`).
+
+Métodos: `SetMinimized`, `SetVisible`/`ToggleVisible`, `SetTitle`, `SetSubtitle`,
+`SetScale`/`GetScale`, `Destroy`, `Notify`.
 Elementos: `Title`, `Subtitle`, `Paragraph`, `Separator`, `Button`, `Toggle`, `Slider`.
 
 Opções comuns dos elementos: `Name`, `Flag`, `Icon`, `IconColor`, `Tooltip`, `Keybind`, `Callback`.

@@ -17,6 +17,7 @@ local Window = Library.new({
 	Icon = "flame", -- ícone da barra de título (nome ou id)
 	Width = 320,
 	MaxHeight = 420,
+	Scale = 1.10, -- zoom geral; aumenta títulos, subtítulos e controles junto
 	ToggleKey = Enum.KeyCode.RightShift, -- esconde/mostra a janela
 })
 

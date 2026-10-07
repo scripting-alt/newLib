@@ -913,19 +913,50 @@ end
 ----------------------------------------------------------------
 -- CRIAR JANELA
 ----------------------------------------------------------------
--- Dimensões de referência convertidas para UDim2.Scale; o layout pai aplica a
--- escala conforme o espaço disponível, sem ler CurrentCamera.ViewportSize.
+-- Escala responsiva com foco em legibilidade. A janela cresce em telas grandes,
+-- mas não reduz as fontes para algo ilegível em telas menores. O tamanho real do
+-- ScreenGui é usado em vez de CurrentCamera.ViewportSize, então também funciona
+-- em containers customizados.
 local SCALE_REFERENCE_WIDTH = 1280
 local SCALE_REFERENCE_HEIGHT = 720
-local MIN_WINDOW_WIDTH_SCALE = 0.1
-local MAX_WINDOW_WIDTH_SCALE = 0.5
+local DEFAULT_MIN_UI_SCALE = 0.95
+local DEFAULT_MAX_UI_SCALE = 1.35
+local MIN_ALLOWED_UI_SCALE = 0.5
+local MAX_ALLOWED_UI_SCALE = 3
+local WINDOW_SAFE_INSET = 18
 
-local function computeWindowWidthScale(width)
-	return math.clamp(width / SCALE_REFERENCE_WIDTH, MIN_WINDOW_WIDTH_SCALE, MAX_WINDOW_WIDTH_SCALE)
+local function positiveNumber(value, fallback)
+	if type(value) == "number" and value > 0 then
+		return value
+	end
+	return fallback
 end
 
-local function computeWindowHeightScale(height)
-	return height / SCALE_REFERENCE_HEIGHT
+local function round(value)
+	return math.floor(value + 0.5)
+end
+
+-- Retorna a escala visual da janela. O limite de encaixe vem por último: em uma
+-- tela extremamente pequena a UI ainda pode diminuir, mas somente o necessário
+-- para continuar totalmente acessível.
+local function computeReadableScale(width, height, bounds, multiplier, minScale, maxScale)
+	local boundsWidth = bounds and bounds.X or 0
+	local boundsHeight = bounds and bounds.Y or 0
+	local referenceScale = 1
+
+	if boundsWidth > 0 and boundsHeight > 0 then
+		referenceScale = math.min(boundsWidth / SCALE_REFERENCE_WIDTH, boundsHeight / SCALE_REFERENCE_HEIGHT)
+	end
+
+	local preferred = math.clamp(referenceScale, minScale, maxScale) * multiplier
+	if boundsWidth <= 0 or boundsHeight <= 0 then
+		return preferred
+	end
+
+	local availableWidth = math.max(1, boundsWidth - WINDOW_SAFE_INSET * 2)
+	local availableHeight = math.max(1, boundsHeight - WINDOW_SAFE_INSET * 2)
+	local fitScale = math.min(availableWidth / math.max(width, 1), availableHeight / math.max(height, 1))
+	return math.max(0.01, math.min(preferred, fitScale))
 end
 
 -- Mantém a janela inteira visível usando o tamanho real do container de UI.
@@ -962,8 +993,11 @@ end
 		Name = "CrimsonLib",          -- nome da ScreenGui
 		Folder = "CrimsonLib",        -- pasta no workspace do executor
 		Icon = "flame",               -- ícone na barra de título (por nome ou id)
-		Width = 300,                   -- largura de referência (layout 1280x720)
-		MaxHeight = 360,               -- altura máxima de referência
+		Width = 300,                   -- largura lógica da janela
+		MaxHeight = 360,               -- altura lógica máxima
+		Scale = 1.10,                  -- zoom geral (1 = padrão)
+		MinScale = 0.95,               -- mínimo automático para leitura
+		MaxScale = 1.35,               -- máximo automático em telas grandes
 		ToggleKey = Enum.KeyCode.RightShift,
 		Parent = nil,                 -- força outro container (padrão: CoreGui)
 		Particles = true,
@@ -1019,6 +1053,12 @@ function Library.new(config)
 	self._maxHeight = config.MaxHeight or 360
 	self._fullH = TITLE_H + MIN_BODY
 	self._h = self._fullH
+	-- Scale é o zoom geral pedido por quem usa a library. MinScale/MaxScale
+	-- limitam somente a parte automática da escala responsiva.
+	self._scaleMultiplier = math.clamp(positiveNumber(config.Scale, 1), MIN_ALLOWED_UI_SCALE, 2)
+	self._minScale = math.clamp(positiveNumber(config.MinScale, DEFAULT_MIN_UI_SCALE), MIN_ALLOWED_UI_SCALE, MAX_ALLOWED_UI_SCALE)
+	self._maxScale = math.clamp(positiveNumber(config.MaxScale, DEFAULT_MAX_UI_SCALE), self._minScale, MAX_ALLOWED_UI_SCALE)
+	self._currentScale = 1
 
 	local WIDTH = self._width
 	local guiName = config.Name or "CrimsonLib"
@@ -1027,10 +1067,8 @@ function Library.new(config)
 	local screenGui = mountScreenGui(guiName, {})
 	self.Gui = screenGui
 
-	local widthScale = computeWindowWidthScale(WIDTH)
-	self._widthScale = widthScale
-
-	-- Container que ocupa a área da ScreenGui; as dimensões da janela usam Scale.
+	-- Container que ocupa a área da ScreenGui. Ele é usado para medir o espaço
+	-- útil e manter a janela dentro da tela, inclusive em um Parent customizado.
 	local screenBounds = create("Frame", {
 		Name = "ScreenBounds",
 		Size = UDim2.fromScale(1, 1),
@@ -1056,22 +1094,26 @@ function Library.new(config)
 		end
 	end
 
-	local aspectConstraint = create("UIAspectRatioConstraint", {
-		AspectRatio = WIDTH / self._h,
-		AspectType = Enum.AspectType.FitWithinMaxSize,
-		DominantAxis = Enum.DominantAxis.Width,
-	})
+	local initialScale = computeReadableScale(
+		WIDTH,
+		self._fullH,
+		screenBounds.AbsoluteSize,
+		self._scaleMultiplier,
+		self._minScale,
+		self._maxScale
+	)
+	self._currentScale = initialScale
+
 	local positionFrame = create("Frame", {
 		Name = "WindowPositioner",
-		Size = UDim2.new(widthScale, 0, computeWindowHeightScale(self._h), 0),
+		Size = UDim2.fromOffset(round(WIDTH * initialScale), round(self._h * initialScale)),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = startPos + UDim2.fromOffset(0, 14),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 		Parent = screenBounds,
-	}, { aspectConstraint })
+	})
 	self._positionFrame = positionFrame
-	self._aspectConstraint = aspectConstraint
 
 	local main = create("Frame", {
 		Name = "Main",
@@ -1086,25 +1128,29 @@ function Library.new(config)
 	}, {
 		corner(14),
 		gradient(Color3.fromRGB(150, 15, 35), T.Dark, 120),
-		create("UIScale", { Scale = 1 }),
+		create("UIScale", { Scale = initialScale }),
 	})
 	self.Main = main
 
 	local uiScale = main:FindFirstChildOfClass("UIScale")
 	self._uiScale = uiScale
 
-	-- O conteúdo é dimensionado pela largura efetiva do container de UI.
-	local function updateContentScale()
-		local width = positionFrame.AbsoluteSize.X
-		if width > 0 then
-			uiScale.Scale = width / WIDTH
-		end
-	end
-	updateContentScale()
+	-- O frame externo e o UIScale recebem a mesma escala. Assim, fontes e
+	-- controles não "vazam" de um container menor e o clamp de posição continua
+	-- correto mesmo quando a resolução muda.
 	table.insert(self._conns, positionFrame:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
-		updateContentScale()
 		positionFrame.Position = clampWindowPosition(positionFrame.Position, positionFrame, screenBounds)
 	end))
+	table.insert(self._conns, screenBounds:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+		if not self._destroyed then
+			self:_setHeight(self._h, 0)
+		end
+	end))
+	task.defer(function()
+		if not self._destroyed then
+			self:_setHeight(self._h, 0)
+		end
+	end)
 
 	-- Borda com brilho girando
 	local stroke = create("UIStroke", {
@@ -1237,7 +1283,7 @@ function Library.new(config)
 		Text = config.Title or "CRIMSON  PANEL",
 		TextColor3 = T.Text,
 		Font = Enum.Font.GothamBlack,
-		TextSize = 13,
+		TextSize = 15,
 		ZIndex = 6,
 		Parent = titleHolder,
 	})
@@ -1254,7 +1300,7 @@ function Library.new(config)
 		Visible = hasSubtitle,
 		TextColor3 = Color3.new(1, 1, 1),
 		Font = Enum.Font.Gotham,
-		TextSize = 11,
+		TextSize = 12,
 		ZIndex = 6,
 		Parent = titleHolder,
 	}, {
@@ -1463,17 +1509,28 @@ function Window:_applyScroll()
 end
 
 function Window:_setHeight(height, duration)
-	local ratio = self._width / math.max(height, 1)
+	-- A escala é calculada usando a altura expandida. Isso evita que a barra
+	-- minimizada fique maior que a janela quando ela for restaurada.
+	local scaleReferenceHeight = self._fullH or height
+	local scale = computeReadableScale(
+		self._width,
+		scaleReferenceHeight,
+		self._screenBounds.AbsoluteSize,
+		self._scaleMultiplier,
+		self._minScale,
+		self._maxScale
+	)
+	self._currentScale = scale
+	self._uiScale.Scale = scale
+
 	local size = UDim2.fromOffset(self._width, height)
-	local scaledBounds = UDim2.new(self._widthScale, 0, computeWindowHeightScale(height), 0)
+	local scaledBounds = UDim2.fromOffset(round(self._width * scale), round(height * scale))
 	if duration and duration > 0 then
 		tween(self.Main, { Size = size }, duration, Enum.EasingStyle.Quart)
 		tween(self._positionFrame, { Size = scaledBounds }, duration, Enum.EasingStyle.Quart)
-		tween(self._aspectConstraint, { AspectRatio = ratio }, duration, Enum.EasingStyle.Quart)
 	else
 		self.Main.Size = size
 		self._positionFrame.Size = scaledBounds
-		self._aspectConstraint.AspectRatio = ratio
 	end
 end
 
@@ -1550,6 +1607,22 @@ end
 function Window:SetSubtitle(text)
 	self._subtitleLabel.Text = text or ""
 	self._subtitleLabel.Visible = text ~= nil and text ~= ""
+end
+
+-- Ajusta o zoom de toda a janela sem precisar recriá-la. O valor é um
+-- multiplicador: 1 mantém o padrão, 1.15 aumenta 15% e 0.9 reduz 10%.
+function Window:SetScale(scale)
+	if type(scale) ~= "number" or scale <= 0 then
+		return self._currentScale
+	end
+	self._scaleMultiplier = math.clamp(scale, MIN_ALLOWED_UI_SCALE, 2)
+	self:_setHeight(self._h, 0.18)
+	return self._currentScale
+end
+
+-- Escala efetiva depois de considerar tamanho da tela e espaço disponível.
+function Window:GetScale()
+	return self._currentScale
 end
 
 -- Mostra/esconde a janela com animação de fade + leve deslize
@@ -1926,14 +1999,14 @@ function Window:Title(text, icon)
 	-- ícone na mesma cor do ícone da barra de título
 	opts.IconColor = opts.IconColor or T.RedBright
 
-	local row = self:_row(24)
+	local row = self:_row(28)
 	-- Aproxima o ícone e o texto da borda esquerda da janela.
 	local iconPosition = UDim2.new(0, TITLE_ROW_INSET, 0.5, 0)
-	local iconWidth = attachIcon(row, opts, 17, iconPosition, TEXT_ICON_GAP)
+	local iconWidth = attachIcon(row, opts, 18, iconPosition, TEXT_ICON_GAP)
 	local textOffset = TITLE_ROW_INSET + iconWidth
 
 	local label = create("TextLabel", {
-		Size = UDim2.new(1, -textOffset, 0, 24),
+		Size = UDim2.new(1, -textOffset, 0, 28),
 		Position = UDim2.new(0, textOffset, 0, 0),
 		BackgroundTransparency = 1,
 		Text = opts.Text or opts.Name or "",
@@ -1941,7 +2014,7 @@ function Window:Title(text, icon)
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		Font = Enum.Font.GothamBlack,
-		TextSize = 17,
+		TextSize = opts.TextSize or 20,
 		Parent = row,
 	})
 	return { Set = function(v) label.Text = v end }
@@ -1953,14 +2026,14 @@ function Window:Subtitle(text, icon)
 	-- ícone na mesma cor do ícone da barra de título
 	opts.IconColor = opts.IconColor or T.RedBright
 
-	local row = self:_row(18)
+	local row = self:_row(22)
 	-- Aproxima o ícone e o texto da borda esquerda da janela.
 	local iconPosition = UDim2.new(0, TITLE_ROW_INSET, 0.5, 0)
-	local iconWidth = attachIcon(row, opts, 14, iconPosition, TEXT_ICON_GAP)
+	local iconWidth = attachIcon(row, opts, 15, iconPosition, TEXT_ICON_GAP)
 	local textOffset = TITLE_ROW_INSET + iconWidth
 
 	local label = create("TextLabel", {
-		Size = UDim2.new(1, -textOffset, 0, 18),
+		Size = UDim2.new(1, -textOffset, 0, 22),
 		Position = UDim2.new(0, textOffset, 0, 0),
 		BackgroundTransparency = 1,
 		Text = opts.Text or opts.Name or "",
@@ -1968,7 +2041,7 @@ function Window:Subtitle(text, icon)
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		Font = Enum.Font.GothamBold,
-		TextSize = 12,
+		TextSize = opts.TextSize or 15,
 		Parent = row,
 	})
 	return { Set = function(v) label.Text = v end }
@@ -1986,7 +2059,7 @@ function Window:Paragraph(text)
 		TextYAlignment = Enum.TextYAlignment.Top,
 		TextWrapped = true,
 		Font = Enum.Font.Gotham,
-		TextSize = 12,
+		TextSize = 14,
 		LayoutOrder = self:_nextOrder(),
 		Parent = self._scroll,
 	})
@@ -2008,7 +2081,7 @@ end
 function Window:Button(opts)
 	opts = opts or {}
 	local T = Library.Theme
-	local row = self:_row(38)
+	local row = self:_row(42)
 
 	-- O texto fica numa label separada: um UIGradient no botão tingiria o texto de vermelho
 	local body, bodyStroke = glassBody("TextButton", row, {
@@ -2024,7 +2097,7 @@ function Window:Button(opts)
 		TextStrokeColor3 = Color3.fromRGB(35, 0, 6),
 		TextStrokeTransparency = 0.7,
 		Font = opts.Primary and Enum.Font.GothamBold or Enum.Font.GothamMedium,
-		TextSize = 13,
+		TextSize = opts.TextSize or 14,
 		Interactable = false,
 		ZIndex = 4,
 		Parent = body,
@@ -2067,7 +2140,7 @@ end
 function Window:Toggle(opts)
 	opts = opts or {}
 	local T = Library.Theme
-	local row = self:_row(38)
+	local row = self:_row(42)
 
 	local body, bodyStroke = glassBody("Frame", row)
 
@@ -2082,7 +2155,7 @@ function Window:Toggle(opts)
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		Font = Enum.Font.GothamMedium,
-		TextSize = 13,
+		TextSize = opts.TextSize or 14,
 		ZIndex = 3,
 		Parent = body,
 	})
@@ -2183,7 +2256,7 @@ function Window:Slider(opts)
 	local max = opts.Max or 100
 	local inc = opts.Increment or 1
 	local suffix = opts.Suffix or ""
-	local row = self:_row(52)
+	local row = self:_row(56)
 
 	local body, bodyStroke = glassBody("Frame", row)
 
@@ -2199,7 +2272,7 @@ function Window:Slider(opts)
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		Font = Enum.Font.GothamMedium,
-		TextSize = 13,
+		TextSize = opts.TextSize or 14,
 		ZIndex = 3,
 		Parent = body,
 	})
@@ -2212,7 +2285,7 @@ function Window:Slider(opts)
 		TextColor3 = T.RedSoft,
 		TextXAlignment = Enum.TextXAlignment.Right,
 		Font = Enum.Font.GothamBold,
-		TextSize = 12,
+		TextSize = opts.ValueTextSize or 13,
 		ZIndex = 3,
 		Parent = body,
 	})
