@@ -1,33 +1,3 @@
---[[
-    CrimsonLib - Biblioteca de UI vermelha translúcida (ModuleScript)
-
-    Como usar:
-      1) Crie um LocalScript em StarterPlayerScripts
-      2) Coloque este arquivo como ModuleScript chamado "CrimsonLib" dentro do LocalScript
-      3) Veja o arquivo CrimsonExample.lua
-
-    API:
-      local Window = Library.new({ Title, Width, MaxHeight, ToggleKey, Particles, Name })
-
-      Window:Title(text)
-      Window:Subtitle(text)
-      Window:Paragraph(text)
-      Window:Separator()
-      Window:Button({ Name, Callback, Primary, Keybind })
-      Window:Toggle({ Name, Default, Callback(value), Keybind })
-      Window:Slider({ Name, Min, Max, Default, Increment, Suffix, Callback(value) })
-
-      Keybind = true            -> mostra botão de keybind (sem tecla definida)
-      Keybind = Enum.KeyCode.F  -> mostra botão de keybind com tecla padrão
-      (opcional) KeybindChanged = function(keyCode | nil) end
-
-      Window:SetMinimized(bool)
-      Window:SetTitle(text)
-      Window:Destroy()
-
-    A janela cresce para baixo conforme você adiciona elementos.
-    Ao chegar em MaxHeight, o conteúdo passa a usar scroll.
-]]
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
