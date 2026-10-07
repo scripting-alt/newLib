@@ -688,8 +688,11 @@ end
 ----------------------------------------------------------------
 local ICON_SIZE = 16
 local ICON_GAP = 7
+local ICON_INSET = 8
+local TEXT_ICON_GAP = 4
+local TITLE_ROW_INSET = 4
 
-local function attachIcon(parent, opts, size)
+local function attachIcon(parent, opts, size, position, gap)
 	if type(opts) ~= "table" then
 		return 0
 	end
@@ -701,7 +704,7 @@ local function attachIcon(parent, opts, size)
 	local iconSize = size or ICON_SIZE
 	create("ImageLabel", {
 		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, 12, 0.5, 0),
+		Position = position or UDim2.new(0, ICON_INSET, 0.5, 0),
 		Size = UDim2.fromOffset(iconSize, iconSize),
 		BackgroundTransparency = 1,
 		Image = asset,
@@ -709,7 +712,7 @@ local function attachIcon(parent, opts, size)
 		ZIndex = 5,
 		Parent = parent,
 	})
-	return iconSize + ICON_GAP
+	return iconSize + (gap or ICON_GAP)
 end
 
 -- Corpo "vidro" usado por botões, toggles e sliders
@@ -910,37 +913,45 @@ end
 ----------------------------------------------------------------
 -- CRIAR JANELA
 ----------------------------------------------------------------
-local function viewportSize()
-	local ok, size = pcall(function()
-		return workspace.CurrentCamera.ViewportSize
-	end)
-	if ok and typeof(size) == "Vector2" and size.X > 0 then
-		return size
+-- Dimensões de referência convertidas para UDim2.Scale; o layout pai aplica a
+-- escala conforme o espaço disponível, sem ler CurrentCamera.ViewportSize.
+local SCALE_REFERENCE_WIDTH = 1280
+local SCALE_REFERENCE_HEIGHT = 720
+local MIN_WINDOW_WIDTH_SCALE = 0.1
+local MAX_WINDOW_WIDTH_SCALE = 0.5
+
+local function computeWindowWidthScale(width)
+	return math.clamp(width / SCALE_REFERENCE_WIDTH, MIN_WINDOW_WIDTH_SCALE, MAX_WINDOW_WIDTH_SCALE)
+end
+
+local function computeWindowHeightScale(height)
+	return height / SCALE_REFERENCE_HEIGHT
+end
+
+-- Mantém a janela inteira visível usando o tamanho real do container de UI.
+local function clampWindowPosition(position, frame, bounds)
+	local viewSize = bounds.AbsoluteSize
+	local frameSize = frame.AbsoluteSize
+	if viewSize.X <= 0 or viewSize.Y <= 0 or frameSize.X <= 0 or frameSize.Y <= 0 then
+		return position
 	end
-	return Vector2.new(1280, 720)
-end
 
--- impede que a janela reapareça fora da tela (mudou a resolução etc.)
-local function clampWindowPosition(position, width)
-	local view = viewportSize()
-	local x = math.clamp(position.X.Offset, -width + 70, view.X - 70)
-	local y = math.clamp(position.Y.Offset, 0, math.max(0, view.Y - 70))
-	return UDim2.new(position.X.Scale, x, position.Y.Scale, y)
-end
+	local absoluteX = position.X.Scale * viewSize.X + position.X.Offset
+	local absoluteY = position.Y.Scale * viewSize.Y + position.Y.Offset
+	local minX = frameSize.X * frame.AnchorPoint.X
+	local maxX = viewSize.X - frameSize.X * (1 - frame.AnchorPoint.X)
+	local minY = frameSize.Y * frame.AnchorPoint.Y
+	local maxY = viewSize.Y - frameSize.Y * (1 - frame.AnchorPoint.Y)
 
--- ESCALA RESPONSIVA
--- A janela é desenhada pensando em 1080p; em telas menores ela encolhe
--- (senão fica grande demais) e em telas maiores cresce (senão fica
--- pequena demais). O UIScale multiplica a janela inteira, mantendo
--- todas as proporções internas.
-local BASE_RESOLUTION = Vector2.new(1920, 1080)
-local MIN_UI_SCALE = 0.7
-local MAX_UI_SCALE = 2
+	if maxX < minX then minX, maxX = viewSize.X / 2, viewSize.X / 2 end
+	if maxY < minY then minY, maxY = viewSize.Y / 2, viewSize.Y / 2 end
+	absoluteX = math.clamp(absoluteX, minX, maxX)
+	absoluteY = math.clamp(absoluteY, minY, maxY)
 
-local function computeUiScale()
-	local view = viewportSize()
-	local scale = math.min(view.X / BASE_RESOLUTION.X, view.Y / BASE_RESOLUTION.Y)
-	return math.clamp(scale, MIN_UI_SCALE, MAX_UI_SCALE)
+	return UDim2.new(
+		position.X.Scale, absoluteX - position.X.Scale * viewSize.X,
+		position.Y.Scale, absoluteY - position.Y.Scale * viewSize.Y
+	)
 end
 
 
@@ -951,8 +962,8 @@ end
 		Name = "CrimsonLib",          -- nome da ScreenGui
 		Folder = "CrimsonLib",        -- pasta no workspace do executor
 		Icon = "flame",               -- ícone na barra de título (por nome ou id)
-		Width = 300,
-		MaxHeight = 360,
+		Width = 300,                   -- largura de referência (layout 1280x720)
+		MaxHeight = 360,               -- altura máxima de referência
 		ToggleKey = Enum.KeyCode.RightShift,
 		Parent = nil,                 -- força outro container (padrão: CoreGui)
 		Particles = true,
@@ -1016,62 +1027,83 @@ function Library.new(config)
 	local screenGui = mountScreenGui(guiName, {})
 	self.Gui = screenGui
 
-	-- posição: última salva em LibrarySettings.json, senão o centro da tela
-	local uiScaleValue = computeUiScale()
-	local startPos = UDim2.new(0.5, -WIDTH * uiScaleValue / 2, 0.5, -self._maxHeight * uiScaleValue / 2)
+	local widthScale = computeWindowWidthScale(WIDTH)
+	self._widthScale = widthScale
+
+	-- Container que ocupa a área da ScreenGui; as dimensões da janela usam Scale.
+	local screenBounds = create("Frame", {
+		Name = "ScreenBounds",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Parent = screenGui,
+	})
+	self._screenBounds = screenBounds
+
+	-- A versão anterior salvava a origem no canto superior esquerdo; converte
+	-- esses valores para o novo ponto de ancoragem central uma única vez.
+	local startPos = UDim2.fromScale(0.5, 0.5)
 	local savedPos = Library.SavePosition and Library:GetSetting("Position")
+	local savedPositionFormat = Library.SavePosition and Library:GetSetting("PositionFormat")
 	if type(savedPos) == "table" and type(savedPos[2]) == "number" and type(savedPos[4]) == "number" then
-		startPos = UDim2.new(savedPos[1] or 0, savedPos[2], savedPos[3] or 0, savedPos[4])
+		if savedPositionFormat == "scale-center" then
+			startPos = UDim2.new(savedPos[1] or 0, savedPos[2], savedPos[3] or 0, savedPos[4])
+		else
+			startPos = UDim2.new(
+				savedPos[1] or 0, savedPos[2] + WIDTH / 2,
+				savedPos[3] or 0, savedPos[4] + self._maxHeight / 2
+			)
+		end
 	end
-	startPos = clampWindowPosition(startPos, WIDTH * uiScaleValue)
+
+	local aspectConstraint = create("UIAspectRatioConstraint", {
+		AspectRatio = WIDTH / self._h,
+		AspectType = Enum.AspectType.FitWithinMaxSize,
+		DominantAxis = Enum.DominantAxis.Width,
+	})
+	local positionFrame = create("Frame", {
+		Name = "WindowPositioner",
+		Size = UDim2.new(widthScale, 0, computeWindowHeightScale(self._h), 0),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = startPos + UDim2.fromOffset(0, 14),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Parent = screenBounds,
+	}, { aspectConstraint })
+	self._positionFrame = positionFrame
+	self._aspectConstraint = aspectConstraint
 
 	local main = create("Frame", {
 		Name = "Main",
 		Size = UDim2.fromOffset(WIDTH, self._h),
-		Position = startPos + UDim2.fromOffset(0, 14),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
 		BackgroundColor3 = Color3.new(1, 1, 1),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 		ClipsDescendants = true,
-		Parent = screenGui,
+		Parent = positionFrame,
 	}, {
 		corner(14),
 		gradient(Color3.fromRGB(150, 15, 35), T.Dark, 120),
-		create("UIScale", { Scale = uiScaleValue }),
+		create("UIScale", { Scale = 1 }),
 	})
 	self.Main = main
 
 	local uiScale = main:FindFirstChildOfClass("UIScale")
 	self._uiScale = uiScale
 
-	-- acompanha mudanças de resolução (troca de tela, fullscreen, etc.)
-	local function applyUiScale()
-		if self._destroyed then
-			return
-		end
-		local scale = computeUiScale()
-		if uiScale.Scale == scale then
-			return
-		end
-		-- mantém o centro da janela no mesmo lugar ao mudar a escala
-		local pos = main.Position
-		local centerX = pos.X.Offset + (WIDTH * uiScale.Scale) / 2
-		local centerY = pos.Y.Offset + (self._h * uiScale.Scale) / 2
-		pos = UDim2.new(pos.X.Scale, centerX - (WIDTH * scale) / 2, pos.Y.Scale, centerY - (self._h * scale) / 2)
-		uiScale.Scale = scale
-		main.Position = clampWindowPosition(pos, WIDTH * scale)
-	end
-
-	local function watchCamera()
-		local camera = workspace.CurrentCamera
-		if camera then
-			table.insert(self._conns, camera:GetPropertyChangedSignal("ViewportSize"):Connect(applyUiScale))
+	-- O conteúdo é dimensionado pela largura efetiva do container de UI.
+	local function updateContentScale()
+		local width = positionFrame.AbsoluteSize.X
+		if width > 0 then
+			uiScale.Scale = width / WIDTH
 		end
 	end
-	watchCamera()
-	table.insert(self._conns, workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
-		watchCamera()
-		applyUiScale()
+	updateContentScale()
+	table.insert(self._conns, positionFrame:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+		updateContentScale()
+		positionFrame.Position = clampWindowPosition(positionFrame.Position, positionFrame, screenBounds)
 	end))
 
 	-- Borda com brilho girando
@@ -1099,6 +1131,7 @@ function Library.new(config)
 		ZIndex = 1,
 		Parent = main,
 	})
+	self._particleLayer = particleLayer
 
 	-- Brilho do topo
 	create("Frame", {
@@ -1149,7 +1182,7 @@ function Library.new(config)
 
 	local dot = create("Frame", {
 		Size = UDim2.fromOffset(8, 8),
-		Position = UDim2.new(0, 14, 0.5, -4),
+		Position = UDim2.new(0, 10, 0.5, -4),
 		BackgroundColor3 = T.RedBright,
 		BorderSizePixel = 0,
 		ZIndex = 6,
@@ -1162,7 +1195,7 @@ function Library.new(config)
 		dot.Visible = false
 		create("ImageLabel", {
 			Size = UDim2.fromOffset(16, 16),
-			Position = UDim2.new(0, 12, 0.5, 0),
+			Position = UDim2.new(0, ICON_INSET, 0.5, 0),
 			AnchorPoint = Vector2.new(0, 0.5),
 			BackgroundTransparency = 1,
 			Image = windowIcon,
@@ -1183,7 +1216,7 @@ function Library.new(config)
 
 	local titleHolder = create("Frame", {
 		Size = UDim2.new(1, -110, 1, 0),
-		Position = UDim2.new(0, 30, 0, 0),
+		Position = UDim2.new(0, 26, 0, 0),
 		BackgroundTransparency = 1,
 		ZIndex = 6,
 		Parent = titleBar,
@@ -1364,7 +1397,7 @@ function Library.new(config)
 			or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
 			dragStart = input.Position
-			startFramePos = main.Position
+			startFramePos = positionFrame.Position
 			input.Changed:Connect(function()
 				if input.UserInputState == Enum.UserInputState.End then
 					if dragging then
@@ -1380,10 +1413,10 @@ function Library.new(config)
 		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
 			or input.UserInputType == Enum.UserInputType.Touch) then
 			local delta = input.Position - dragStart
-			main.Position = UDim2.new(
+			positionFrame.Position = clampWindowPosition(UDim2.new(
 				startFramePos.X.Scale, startFramePos.X.Offset + delta.X,
 				startFramePos.Y.Scale, startFramePos.Y.Offset + delta.Y
-			)
+			), positionFrame, screenBounds)
 		end
 	end))
 
@@ -1407,7 +1440,8 @@ function Library.new(config)
 	end))
 
 	-- Animação de entrada
-	tween(main, { Position = startPos, BackgroundTransparency = 0.28 }, 0.4, Enum.EasingStyle.Quart)
+	tween(positionFrame, { Position = startPos }, 0.4, Enum.EasingStyle.Quart)
+	tween(main, { BackgroundTransparency = 0.28 }, 0.4, Enum.EasingStyle.Quart)
 
 	-- volta minimizado se era assim que estava na última execução
 	if Library.SavePosition and Library:GetSetting("Minimized") == true then
@@ -1428,6 +1462,21 @@ function Window:_applyScroll()
 	self._scroll.ScrollingEnabled = self._canScroll and not self._dragging
 end
 
+function Window:_setHeight(height, duration)
+	local ratio = self._width / math.max(height, 1)
+	local size = UDim2.fromOffset(self._width, height)
+	local scaledBounds = UDim2.new(self._widthScale, 0, computeWindowHeightScale(height), 0)
+	if duration and duration > 0 then
+		tween(self.Main, { Size = size }, duration, Enum.EasingStyle.Quart)
+		tween(self._positionFrame, { Size = scaledBounds }, duration, Enum.EasingStyle.Quart)
+		tween(self._aspectConstraint, { AspectRatio = ratio }, duration, Enum.EasingStyle.Quart)
+	else
+		self.Main.Size = size
+		self._positionFrame.Size = scaledBounds
+		self._aspectConstraint.AspectRatio = ratio
+	end
+end
+
 function Window:_refresh()
 	if self._refreshQueued or self._destroyed then return end
 	self._refreshQueued = true
@@ -1435,7 +1484,9 @@ function Window:_refresh()
 		self._refreshQueued = false
 		if self._destroyed then return end
 
-		local needed = TITLE_H + PAD_TOP + self._layout.AbsoluteContentSize.Y + PAD_BOTTOM
+		local scale = math.max(self._uiScale.Scale, 0.001)
+		local contentHeight = self._layout.AbsoluteContentSize.Y / scale
+		local needed = TITLE_H + PAD_TOP + contentHeight + PAD_BOTTOM
 		local target = math.clamp(needed, TITLE_H + MIN_BODY, self._maxHeight)
 
 		self._fullH = target
@@ -1445,7 +1496,7 @@ function Window:_refresh()
 
 		if not self._minimized then
 			self._h = target
-			tween(self.Main, { Size = UDim2.fromOffset(self._width, target) }, 0.25, Enum.EasingStyle.Quart)
+			self:_setHeight(target, 0.25)
 		end
 	end)
 end
@@ -1469,8 +1520,9 @@ function Window:_savePosition()
 	if not Library.SavePosition or self._destroyed then
 		return
 	end
-	local position = self.Main.Position
+	local position = self._positionFrame.Position
 	Library:SetSetting("Position", { position.X.Scale, position.X.Offset, position.Y.Scale, position.Y.Offset })
+	Library:SetSetting("PositionFormat", "scale-center")
 end
 
 function Window:SetMinimized(state)
@@ -1481,16 +1533,14 @@ function Window:SetMinimized(state)
 	end
 	self._minBtn.Text = self._minimized and "+" or "–"
 	self._scroll.Visible = not self._minimized
-	self.Main.Particles.Visible = not self._minimized
+	self._particleLayer.Visible = not self._minimized
 	self._divider.Visible = not self._minimized
 	-- minimizado: fundo da barra com altura exata (cantos de baixo redondos)
 	self._titleBg.Size = UDim2.new(1, 0, 0, self._minimized and TITLE_H or TITLE_H + 20)
 
 	local h = self._minimized and TITLE_H or self._fullH
-	if not self._minimized then
-		self._h = h
-	end
-	tween(self.Main, { Size = UDim2.fromOffset(self._width, h) }, 0.3, Enum.EasingStyle.Quart)
+	self._h = h
+	self:_setHeight(h, 0.3)
 end
 
 function Window:SetTitle(text)
@@ -1509,6 +1559,7 @@ function Window:SetVisible(state)
 	self._fading = true
 
 	local main = self.Main
+	local positionFrame = self._positionFrame
 
 	Library.HideTooltip()
 
@@ -1521,8 +1572,8 @@ function Window:SetVisible(state)
 			tween(inst, { [prop] = 1 }, FADE_TIME)
 		end
 		self._snapshot = snapshot
-		self._shownPos = main.Position
-		tween(main, { Position = main.Position + UDim2.fromOffset(0, 12) }, FADE_TIME)
+		self._shownPos = positionFrame.Position
+		tween(positionFrame, { Position = positionFrame.Position + UDim2.fromOffset(0, 12) }, FADE_TIME)
 
 		task.delay(FADE_TIME + 0.03, function()
 			if self._destroyed then return end
@@ -1533,14 +1584,14 @@ function Window:SetVisible(state)
 	else
 		-- aparece: volta aos valores originais subindo de leve
 		self.Gui.Enabled = true
-		local shownPos = self._shownPos or main.Position
-		main.Position = shownPos + UDim2.fromOffset(0, 12)
+		local shownPos = self._shownPos or positionFrame.Position
+		positionFrame.Position = shownPos + UDim2.fromOffset(0, 12)
 		for _, s in ipairs(self._snapshot or {}) do
 			if s[1].Parent then
 				tween(s[1], { [s[2]] = s[3] }, FADE_TIME)
 			end
 		end
-		tween(main, { Position = shownPos }, FADE_TIME)
+		tween(positionFrame, { Position = shownPos }, FADE_TIME)
 
 		task.delay(FADE_TIME + 0.03, function()
 			if self._destroyed then return end
@@ -1570,10 +1621,11 @@ function Window:Destroy(animated)
 
 	local gui = self.Gui
 	if animated and gui.Parent then
-		tween(self.Main, {
-			Size = UDim2.fromOffset(self._width, 0),
-			BackgroundTransparency = 1,
+		self:_setHeight(TITLE_H, 0.2)
+		tween(self._positionFrame, {
+			Position = self._positionFrame.Position + UDim2.fromOffset(0, 10),
 		}, 0.2)
+		tween(self.Main, { BackgroundTransparency = 1 }, 0.2)
 		task.delay(0.22, function()
 			gui:Destroy()
 		end)
@@ -1875,10 +1927,10 @@ function Window:Title(text, icon)
 	opts.IconColor = opts.IconColor or T.RedBright
 
 	local row = self:_row(24)
-	local iconWidth = attachIcon(row, opts, 17)
-	-- o ícone começa em x = 12: o texto precisa dos 12 + ícone + espaço
-	-- (sem isso o texto sobrepõe o ícone)
-	local textOffset = 12 + iconWidth
+	-- Aproxima o ícone e o texto da borda esquerda da janela.
+	local iconPosition = UDim2.new(0, TITLE_ROW_INSET, 0.5, 0)
+	local iconWidth = attachIcon(row, opts, 17, iconPosition, TEXT_ICON_GAP)
+	local textOffset = TITLE_ROW_INSET + iconWidth
 
 	local label = create("TextLabel", {
 		Size = UDim2.new(1, -textOffset, 0, 24),
@@ -1902,8 +1954,10 @@ function Window:Subtitle(text, icon)
 	opts.IconColor = opts.IconColor or T.RedBright
 
 	local row = self:_row(18)
-	local iconWidth = attachIcon(row, opts, 14)
-	local textOffset = 12 + iconWidth
+	-- Aproxima o ícone e o texto da borda esquerda da janela.
+	local iconPosition = UDim2.new(0, TITLE_ROW_INSET, 0.5, 0)
+	local iconWidth = attachIcon(row, opts, 14, iconPosition, TEXT_ICON_GAP)
+	local textOffset = TITLE_ROW_INSET + iconWidth
 
 	local label = create("TextLabel", {
 		Size = UDim2.new(1, -textOffset, 0, 18),
@@ -2020,8 +2074,8 @@ function Window:Toggle(opts)
 	local iconWidth = attachIcon(body, opts)
 
 	create("TextLabel", {
-		Size = UDim2.new(1, -(64 + iconWidth), 1, 0),
-		Position = UDim2.new(0, 12 + iconWidth, 0, 0),
+		Size = UDim2.new(1, -(60 + iconWidth), 1, 0),
+		Position = UDim2.new(0, ICON_INSET + iconWidth, 0, 0),
 		BackgroundTransparency = 1,
 		Text = opts.Name or "Toggle",
 		TextColor3 = T.Text,
@@ -2133,11 +2187,12 @@ function Window:Slider(opts)
 
 	local body, bodyStroke = glassBody("Frame", row)
 
-	local iconWidth = attachIcon(body, opts)
+	-- O título do slider fica no topo do controle; alinhe o ícone ao texto.
+	local iconWidth = attachIcon(body, opts, nil, UDim2.new(0, ICON_INSET, 0, 16))
 
 	create("TextLabel", {
-		Size = UDim2.new(0.6, -(12 + iconWidth), 0, 16),
-		Position = UDim2.new(0, 12 + iconWidth, 0, 8),
+		Size = UDim2.new(0.6, -(ICON_INSET + iconWidth), 0, 16),
+		Position = UDim2.new(0, ICON_INSET + iconWidth, 0, 8),
 		BackgroundTransparency = 1,
 		Text = opts.Name or "Slider",
 		TextColor3 = T.Text,
