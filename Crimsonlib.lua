@@ -33,6 +33,7 @@ local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
+local TextService = game:GetService("TextService")
 
 local Library = {}
 local Window = {}
@@ -361,7 +362,7 @@ function Library.new(config)
 		Parent = titleHolder,
 	}, {
 		create("UIGradient", {
-			Color = ColorSequence.new(Color3.fromRGB(235, 235, 240), Color3.fromRGB(125, 125, 135)),
+			Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(200, 200, 210)),
 			Rotation = 0,
 		}),
 	})
@@ -1293,6 +1294,263 @@ function Window:Slider(opts)
 			return value
 		end,
 	}
+end
+
+----------------------------------------------------------------
+-- NOTIFICAÇÕES (canto inferior direito, empilham subindo)
+--
+-- Library.Notify({
+--     Title = "Título",
+--     Text = "Mensagem",            -- (ou Message)
+--     Type = "Info",                -- "Info" | "Success" | "Warning" | "Error"
+--     Duration = 4,                 -- segundos (false ou 0 = fica até clicar)
+--     Icon = 123456789,             -- opcional: id de imagem (número ou "rbxassetid://...")
+--     IconColor = Color3,           -- opcional: tinge o ícone de imagem
+--     Callback = function() end,    -- opcional: chamado ao clicar na notificação
+-- })
+-- Também disponível como Window:Notify({...})
+-- Retorna { Dismiss = function }
+----------------------------------------------------------------
+local NOTIFY_WIDTH = 290
+local NOTIFY_MAX = 6
+local notifier = nil
+local notifyCounter = 0
+
+local NotifyTypes = {
+	Info = { color = Color3.fromRGB(255, 100, 115), glyph = "i" },
+	Success = { color = Color3.fromRGB(95, 230, 135), glyph = "✓" },
+	Warning = { color = Color3.fromRGB(255, 198, 75), glyph = "!" },
+	Error = { color = Color3.fromRGB(255, 70, 90), glyph = "✕" },
+}
+
+local function ensureNotifier()
+	if notifier and notifier.gui.Parent then
+		return notifier
+	end
+
+	local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
+	local old = playerGui:FindFirstChild("CrimsonLib_Notifications")
+	if old then old:Destroy() end
+
+	local gui = create("ScreenGui", {
+		Name = "CrimsonLib_Notifications",
+		ResetOnSpawn = false,
+		DisplayOrder = 100,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		Parent = playerGui,
+	})
+
+	local holder = create("Frame", {
+		AnchorPoint = Vector2.new(1, 1),
+		Position = UDim2.new(1, -16, 1, -16),
+		Size = UDim2.new(0, NOTIFY_WIDTH, 1, -32),
+		BackgroundTransparency = 1,
+		Parent = gui,
+	}, {
+		create("UIListLayout", {
+			Padding = UDim.new(0, 8),
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			VerticalAlignment = Enum.VerticalAlignment.Bottom,
+			HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		}),
+	})
+
+	notifier = { gui = gui, holder = holder, active = {} }
+	return notifier
+end
+
+function Library.Notify(opts)
+	opts = opts or {}
+	local T = Library.Theme
+	local n = ensureNotifier()
+
+	local kind = NotifyTypes[opts.Type] or NotifyTypes.Info
+	local title = opts.Title or "Notificação"
+	local text = opts.Text or opts.Message or ""
+
+	local duration = opts.Duration
+	if duration == nil then duration = 4 end
+	local persistent = duration == false or (type(duration) == "number" and duration <= 0)
+
+	-- altura calculada pelo tamanho do texto
+	local textW = NOTIFY_WIDTH - 56 - 14
+	local msgH = 0
+	if text ~= "" then
+		msgH = TextService:GetTextSize(text, 12, Enum.Font.Gotham, Vector2.new(textW, 1000)).Y
+	end
+	local height = math.max(58, 29 + msgH + (persistent and 12 or 18))
+
+	notifyCounter += 1
+	local wrapper = create("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		BackgroundTransparency = 1,
+		LayoutOrder = notifyCounter,
+		Parent = n.holder,
+	})
+
+	local offscreen = UDim2.new(0, NOTIFY_WIDTH + 40, 1, 0)
+
+	local card = create("Frame", {
+		AnchorPoint = Vector2.new(0, 1),
+		Position = offscreen,
+		Size = UDim2.new(1, 0, 0, height),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 0.12,
+		BorderSizePixel = 0,
+		Parent = wrapper,
+	}, {
+		corner(12),
+		gradient(Color3.fromRGB(150, 15, 35), T.Dark, 120),
+		create("UIStroke", { Color = T.RedBright, Thickness = 1.3, Transparency = 0.25 }),
+	})
+
+	-- ícone
+	local iconHolder = create("Frame", {
+		Position = UDim2.fromOffset(12, 12),
+		Size = UDim2.fromOffset(34, 34),
+		BackgroundColor3 = kind.color,
+		BackgroundTransparency = 0.8,
+		BorderSizePixel = 0,
+		Parent = card,
+	}, {
+		corner(10),
+		create("UIStroke", { Color = kind.color, Thickness = 1.2, Transparency = 0.35 }),
+	})
+
+	if opts.Icon then
+		local image = type(opts.Icon) == "number" and ("rbxassetid://" .. opts.Icon) or tostring(opts.Icon)
+		create("ImageLabel", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(20, 20),
+			BackgroundTransparency = 1,
+			Image = image,
+			ImageColor3 = opts.IconColor or Color3.new(1, 1, 1),
+			Parent = iconHolder,
+		})
+	else
+		create("TextLabel", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			Text = kind.glyph,
+			TextColor3 = kind.color,
+			Font = Enum.Font.GothamBlack,
+			TextSize = 18,
+			Parent = iconHolder,
+		})
+	end
+
+	create("TextLabel", {
+		Position = UDim2.fromOffset(56, 10),
+		Size = UDim2.new(1, -70, 0, 16),
+		BackgroundTransparency = 1,
+		Text = title,
+		TextColor3 = Color3.new(1, 1, 1),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Font = Enum.Font.GothamBold,
+		TextSize = 13,
+		Parent = card,
+	})
+
+	if text ~= "" then
+		create("TextLabel", {
+			Position = UDim2.fromOffset(56, 29),
+			Size = UDim2.new(1, -70, 0, msgH),
+			BackgroundTransparency = 1,
+			Text = text,
+			TextColor3 = Color3.fromRGB(235, 220, 222),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			TextWrapped = true,
+			Font = Enum.Font.Gotham,
+			TextSize = 12,
+			Parent = card,
+		})
+	end
+
+	-- barra de progresso (tempo restante)
+	local fill
+	if not persistent then
+		local track = create("Frame", {
+			Position = UDim2.new(0, 56, 1, -10),
+			Size = UDim2.new(1, -70, 0, 3),
+			BackgroundColor3 = kind.color,
+			BackgroundTransparency = 0.85,
+			BorderSizePixel = 0,
+			Parent = card,
+		}, { corner(2) })
+		fill = create("Frame", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundColor3 = kind.color,
+			BorderSizePixel = 0,
+			Parent = track,
+		}, { corner(2) })
+	end
+
+	-- clique = dispensar
+	local hit = create("TextButton", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Text = "",
+		ZIndex = 10,
+		Parent = card,
+	})
+
+	local handle = {}
+	local dismissed = false
+
+	local function dismiss()
+		if dismissed then return end
+		dismissed = true
+
+		for i, item in ipairs(n.active) do
+			if item == handle then
+				table.remove(n.active, i)
+				break
+			end
+		end
+
+		tween(card, { Position = offscreen }, 0.28, Enum.EasingStyle.Quart)
+		task.delay(0.26, function()
+			tween(wrapper, { Size = UDim2.new(1, 0, 0, 0) }, 0.22, Enum.EasingStyle.Quart)
+			task.delay(0.24, function()
+				wrapper:Destroy()
+			end)
+		end)
+	end
+	handle.Dismiss = dismiss
+
+	hit.MouseButton1Click:Connect(function()
+		pcallCallback(opts.Callback)
+		dismiss()
+	end)
+
+	-- entrada: o espaço cresce (as antigas sobem) e o card desliza da direita
+	tween(wrapper, { Size = UDim2.new(1, 0, 0, height) }, 0.25, Enum.EasingStyle.Quart)
+	task.delay(0.05, function()
+		if not dismissed then
+			tween(card, { Position = UDim2.new(0, 0, 1, 0) }, 0.4, Enum.EasingStyle.Back)
+		end
+	end)
+
+	if fill then
+		TweenService:Create(fill, TweenInfo.new(duration, Enum.EasingStyle.Linear), {
+			Size = UDim2.new(0, 0, 1, 0),
+		}):Play()
+		task.delay(duration, dismiss)
+	end
+
+	table.insert(n.active, handle)
+	if #n.active > NOTIFY_MAX then
+		n.active[1].Dismiss()
+	end
+
+	return handle
+end
+
+function Window:Notify(opts)
+	return Library.Notify(opts)
 end
 
 return Library
