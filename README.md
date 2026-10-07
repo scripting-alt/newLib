@@ -124,8 +124,8 @@ local Window = Library.new({
 	Name = "CrimsonLib",      -- nome da ScreenGui
 	Folder = "CrimsonLib",    -- pasta dos arquivos
 	Icon = "flame",           -- ícone da barra de título
-	Width = 300,              -- tamanho base (a janela escala sozinha com a resolução)
-	MaxHeight = 360,
+	Width = 300,              -- largura de referência (layout 1280×720)
+	MaxHeight = 360,          -- altura máxima de referência
 	ToggleKey = Enum.KeyCode.RightShift,
 	Parent = nil,             -- força outro container
 	Particles = true,
@@ -135,10 +135,11 @@ local Window = Library.new({
 })
 ```
 
-A janela usa **escala automática**: o tamanho base usa como referência 1600×900 e
-um `UIScale` multiplica tudo proporcionalmente. A escala mínima é 1x (para a
-interface não ficar pequena em telas menores) e aumenta até 2x em resoluções
-maiores. A escala acompanha mudanças de resolução na hora.
+A janela usa dimensões em `Scale` (`UDim2`) com layout de referência 1280×720 e
+`UIAspectRatioConstraint` para manter a proporção em diferentes formatos de tela.
+O container se ajusta ao espaço disponível e um `UIScale` acompanha o tamanho
+efetivo da janela para manter textos e controles proporcionais, sem consultar
+`CurrentCamera.ViewportSize`.
 
 Métodos: `SetMinimized`, `SetVisible`/`ToggleVisible`, `SetTitle`, `SetSubtitle`, `Destroy`, `Notify`.
 Elementos: `Title`, `Subtitle`, `Paragraph`, `Separator`, `Button`, `Toggle`, `Slider`.
