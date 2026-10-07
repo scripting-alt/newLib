@@ -145,6 +145,31 @@ local function formatNumber(v)
 	return tostring(math.floor(v * 1000 + 0.5) / 1000)
 end
 
+-- Lista tudo que precisa de fade (fundo, texto, bordas, scrollbar)
+local FADE_TIME = 0.28
+local function fadeTargets(root)
+	local list = {}
+	local function add(inst)
+		if inst:IsA("GuiObject") then
+			table.insert(list, { inst, "BackgroundTransparency" })
+			if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+				table.insert(list, { inst, "TextTransparency" })
+				table.insert(list, { inst, "TextStrokeTransparency" })
+			end
+			if inst:IsA("ScrollingFrame") then
+				table.insert(list, { inst, "ScrollBarImageTransparency" })
+			end
+		elseif inst:IsA("UIStroke") then
+			table.insert(list, { inst, "Transparency" })
+		end
+	end
+	add(root)
+	for _, d in ipairs(root:GetDescendants()) do
+		add(d)
+	end
+	return list
+end
+
 ----------------------------------------------------------------
 -- CRIAR JANELA
 ----------------------------------------------------------------
@@ -158,6 +183,8 @@ function Library.new(config)
 	self._listening = false
 	self._minimized = false
 	self._destroyed = false
+	self._visible = true
+	self._fading = false
 	self._canScroll = false
 	self._dragging = false
 	self._order = 0
@@ -289,19 +316,56 @@ function Library.new(config)
 		end
 	end)
 
-	local titleLabel = create("TextLabel", {
+	local titleHolder = create("Frame", {
 		Size = UDim2.new(1, -110, 1, 0),
 		Position = UDim2.new(0, 30, 0, 0),
 		BackgroundTransparency = 1,
+		ZIndex = 6,
+		Parent = titleBar,
+	}, {
+		create("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			VerticalAlignment = Enum.VerticalAlignment.Center,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, 7),
+		}),
+	})
+
+	local titleLabel = create("TextLabel", {
+		Size = UDim2.new(0, 0, 1, 0),
+		AutomaticSize = Enum.AutomaticSize.X,
+		LayoutOrder = 1,
+		BackgroundTransparency = 1,
 		Text = config.Title or "CRIMSON  PANEL",
 		TextColor3 = T.Text,
-		TextXAlignment = Enum.TextXAlignment.Left,
 		Font = Enum.Font.GothamBlack,
 		TextSize = 13,
 		ZIndex = 6,
-		Parent = titleBar,
+		Parent = titleHolder,
 	})
 	self._titleLabel = titleLabel
+
+	-- Subtítulo: menor e com degradê de branco para cinza
+	local hasSubtitle = config.Subtitle ~= nil and config.Subtitle ~= ""
+	local subtitleLabel = create("TextLabel", {
+		Size = UDim2.new(0, 0, 1, 0),
+		AutomaticSize = Enum.AutomaticSize.X,
+		LayoutOrder = 2,
+		BackgroundTransparency = 1,
+		Text = config.Subtitle or "",
+		Visible = hasSubtitle,
+		TextColor3 = Color3.new(1, 1, 1),
+		Font = Enum.Font.Gotham,
+		TextSize = 11,
+		ZIndex = 6,
+		Parent = titleHolder,
+	}, {
+		create("UIGradient", {
+			Color = ColorSequence.new(Color3.fromRGB(235, 235, 240), Color3.fromRGB(125, 125, 135)),
+			Rotation = 0,
+		}),
+	})
+	self._subtitleLabel = subtitleLabel
 
 	local function titleButton(text, xOffset)
 		local btn = create("TextButton", {
@@ -463,7 +527,7 @@ function Library.new(config)
 		if self._listening or gameProcessed then return end
 
 		if config.ToggleKey and input.KeyCode == config.ToggleKey then
-			screenGui.Enabled = not screenGui.Enabled
+			self:ToggleVisible()
 			return
 		end
 
@@ -527,6 +591,61 @@ end
 
 function Window:SetTitle(text)
 	self._titleLabel.Text = text
+end
+
+function Window:SetSubtitle(text)
+	self._subtitleLabel.Text = text or ""
+	self._subtitleLabel.Visible = text ~= nil and text ~= ""
+end
+
+-- Mostra/esconde a janela com animação de fade + leve deslize
+function Window:SetVisible(state)
+	state = state and true or false
+	if self._destroyed or self._fading or state == self._visible then return end
+	self._fading = true
+
+	local main = self.Main
+
+	if not state then
+		-- some: guarda os valores originais e leva tudo a 100% transparente
+		local snapshot = {}
+		for _, item in ipairs(fadeTargets(main)) do
+			local inst, prop = item[1], item[2]
+			table.insert(snapshot, { inst, prop, inst[prop] })
+			tween(inst, { [prop] = 1 }, FADE_TIME)
+		end
+		self._snapshot = snapshot
+		self._shownPos = main.Position
+		tween(main, { Position = main.Position + UDim2.fromOffset(0, 12) }, FADE_TIME)
+
+		task.delay(FADE_TIME + 0.03, function()
+			if self._destroyed then return end
+			self.Gui.Enabled = false
+			self._visible = false
+			self._fading = false
+		end)
+	else
+		-- aparece: volta aos valores originais subindo de leve
+		self.Gui.Enabled = true
+		local shownPos = self._shownPos or main.Position
+		main.Position = shownPos + UDim2.fromOffset(0, 12)
+		for _, s in ipairs(self._snapshot or {}) do
+			if s[1].Parent then
+				tween(s[1], { [s[2]] = s[3] }, FADE_TIME)
+			end
+		end
+		tween(main, { Position = shownPos }, FADE_TIME)
+
+		task.delay(FADE_TIME + 0.03, function()
+			if self._destroyed then return end
+			self._visible = true
+			self._fading = false
+		end)
+	end
+end
+
+function Window:ToggleVisible()
+	self:SetVisible(not self._visible)
 end
 
 function Window:Destroy(animated)
