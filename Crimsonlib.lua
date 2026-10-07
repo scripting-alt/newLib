@@ -928,6 +928,21 @@ local function clampWindowPosition(position, width)
 	return UDim2.new(position.X.Scale, x, position.Y.Scale, y)
 end
 
+-- ESCALA RESPONSIVA
+-- A janela é desenhada pensando em 1080p; em telas menores ela encolhe
+-- (senão fica grande demais) e em telas maiores cresce (senão fica
+-- pequena demais). O UIScale multiplica a janela inteira, mantendo
+-- todas as proporções internas.
+local BASE_RESOLUTION = Vector2.new(1920, 1080)
+local MIN_UI_SCALE = 0.7
+local MAX_UI_SCALE = 2
+
+local function computeUiScale()
+	local view = viewportSize()
+	local scale = math.min(view.X / BASE_RESOLUTION.X, view.Y / BASE_RESOLUTION.Y)
+	return math.clamp(scale, MIN_UI_SCALE, MAX_UI_SCALE)
+end
+
 
 --[[
 	Library.new({
@@ -1002,12 +1017,13 @@ function Library.new(config)
 	self.Gui = screenGui
 
 	-- posição: última salva em LibrarySettings.json, senão o centro da tela
-	local startPos = UDim2.new(0.5, -WIDTH / 2, 0.5, -self._maxHeight / 2)
+	local uiScaleValue = computeUiScale()
+	local startPos = UDim2.new(0.5, -WIDTH * uiScaleValue / 2, 0.5, -self._maxHeight * uiScaleValue / 2)
 	local savedPos = Library.SavePosition and Library:GetSetting("Position")
 	if type(savedPos) == "table" and type(savedPos[2]) == "number" and type(savedPos[4]) == "number" then
 		startPos = UDim2.new(savedPos[1] or 0, savedPos[2], savedPos[3] or 0, savedPos[4])
 	end
-	startPos = clampWindowPosition(startPos, WIDTH)
+	startPos = clampWindowPosition(startPos, WIDTH * uiScaleValue)
 
 	local main = create("Frame", {
 		Name = "Main",
@@ -1021,8 +1037,42 @@ function Library.new(config)
 	}, {
 		corner(14),
 		gradient(Color3.fromRGB(150, 15, 35), T.Dark, 120),
+		create("UIScale", { Scale = uiScaleValue }),
 	})
 	self.Main = main
+
+	local uiScale = main:FindFirstChildOfClass("UIScale")
+	self._uiScale = uiScale
+
+	-- acompanha mudanças de resolução (troca de tela, fullscreen, etc.)
+	local function applyUiScale()
+		if self._destroyed then
+			return
+		end
+		local scale = computeUiScale()
+		if uiScale.Scale == scale then
+			return
+		end
+		-- mantém o centro da janela no mesmo lugar ao mudar a escala
+		local pos = main.Position
+		local centerX = pos.X.Offset + (WIDTH * uiScale.Scale) / 2
+		local centerY = pos.Y.Offset + (self._h * uiScale.Scale) / 2
+		pos = UDim2.new(pos.X.Scale, centerX - (WIDTH * scale) / 2, pos.Y.Scale, centerY - (self._h * scale) / 2)
+		uiScale.Scale = scale
+		main.Position = clampWindowPosition(pos, WIDTH * scale)
+	end
+
+	local function watchCamera()
+		local camera = workspace.CurrentCamera
+		if camera then
+			table.insert(self._conns, camera:GetPropertyChangedSignal("ViewportSize"):Connect(applyUiScale))
+		end
+	end
+	watchCamera()
+	table.insert(self._conns, workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+		watchCamera()
+		applyUiScale()
+	end))
 
 	-- Borda com brilho girando
 	local stroke = create("UIStroke", {
@@ -1821,16 +1871,21 @@ end
 function Window:Title(text, icon)
 	local T = Library.Theme
 	local opts = type(text) == "table" and text or { Text = text, Icon = icon }
+	-- ícone na mesma cor do ícone da barra de título
+	opts.IconColor = opts.IconColor or T.RedBright
 
 	local row = self:_row(24)
 	local iconWidth = attachIcon(row, opts, 17)
+	-- o ícone começa em x = 12: o texto precisa dos 12 + ícone + espaço
+	-- (sem isso o texto sobrepõe o ícone)
+	local textOffset = 12 + iconWidth
 
 	local label = create("TextLabel", {
-		Size = UDim2.new(1, -iconWidth, 0, 24),
-		Position = UDim2.new(0, iconWidth, 0, 0),
+		Size = UDim2.new(1, -textOffset, 0, 24),
+		Position = UDim2.new(0, textOffset, 0, 0),
 		BackgroundTransparency = 1,
 		Text = opts.Text or opts.Name or "",
-		TextColor3 = T.Text,
+		TextColor3 = Color3.new(1, 1, 1),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		Font = Enum.Font.GothamBlack,
@@ -1843,16 +1898,19 @@ end
 function Window:Subtitle(text, icon)
 	local T = Library.Theme
 	local opts = type(text) == "table" and text or { Text = text, Icon = icon }
+	-- ícone na mesma cor do ícone da barra de título
+	opts.IconColor = opts.IconColor or T.RedBright
 
 	local row = self:_row(18)
 	local iconWidth = attachIcon(row, opts, 14)
+	local textOffset = 12 + iconWidth
 
 	local label = create("TextLabel", {
-		Size = UDim2.new(1, -iconWidth, 0, 18),
-		Position = UDim2.new(0, iconWidth, 0, 0),
+		Size = UDim2.new(1, -textOffset, 0, 18),
+		Position = UDim2.new(0, textOffset, 0, 0),
 		BackgroundTransparency = 1,
 		Text = opts.Text or opts.Name or "",
-		TextColor3 = T.RedSoft,
+		TextColor3 = Color3.new(1, 1, 1),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		Font = Enum.Font.GothamBold,
