@@ -34,6 +34,7 @@ local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local TextService = game:GetService("TextService")
+local HttpService = game:GetService("HttpService")
 
 local Library = {}
 local Window = {}
@@ -169,6 +170,139 @@ local function fadeTargets(root)
 		add(d)
 	end
 	return list
+end
+
+----------------------------------------------------------------
+-- TOOLTIP
+-- Uso: adicione Tooltip = "texto" em Button, Toggle ou Slider.
+-- Aparece ao passar o mouse (após um pequeno atraso) e segue o cursor.
+----------------------------------------------------------------
+local TOOLTIP_MAX_W = 230
+local TOOLTIP_DELAY = 0.35
+local tooltip = nil
+local tooltipToken = 0
+
+local function ensureTooltip()
+	if tooltip and tooltip.gui.Parent then
+		return tooltip
+	end
+
+	local T = Library.Theme
+	local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
+	local old = playerGui:FindFirstChild("CrimsonLib_Tooltip")
+	if old then old:Destroy() end
+
+	local gui = create("ScreenGui", {
+		Name = "CrimsonLib_Tooltip",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true, -- posição igual à do mouse
+		DisplayOrder = 200,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		Parent = playerGui,
+	})
+
+	local frame = create("Frame", {
+		Size = UDim2.fromOffset(100, 30),
+		BackgroundColor3 = T.Dark,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Visible = false,
+		Parent = gui,
+	}, {
+		corner(8),
+		create("UIStroke", { Color = T.RedBright, Thickness = 1.2, Transparency = 1 }),
+	})
+
+	local label = create("TextLabel", {
+		Position = UDim2.fromOffset(10, 8),
+		Size = UDim2.new(1, -20, 1, -16),
+		BackgroundTransparency = 1,
+		TextColor3 = Color3.new(1, 1, 1),
+		TextTransparency = 1,
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		Font = Enum.Font.Gotham,
+		TextSize = 12,
+		Parent = frame,
+	})
+
+	tooltip = {
+		gui = gui,
+		frame = frame,
+		label = label,
+		stroke = frame:FindFirstChildOfClass("UIStroke"),
+		visible = false,
+		w = 100,
+		h = 30,
+	}
+	return tooltip
+end
+
+local function placeTooltip(tt)
+	local m = UserInputService:GetMouseLocation()
+	local view = tt.gui.AbsoluteSize
+	local x = m.X + 14
+	local y = m.Y + 18
+	if x + tt.w > view.X - 6 then
+		x = m.X - tt.w - 10
+	end
+	if y + tt.h > view.Y - 6 then
+		y = m.Y - tt.h - 12
+	end
+	tt.frame.Position = UDim2.fromOffset(math.max(6, x), math.max(6, y))
+end
+
+local function showTooltip(text)
+	local tt = ensureTooltip()
+	local bounds = TextService:GetTextSize(text, 12, Enum.Font.Gotham, Vector2.new(TOOLTIP_MAX_W - 20, 1000))
+	tt.w = math.ceil(bounds.X) + 22
+	tt.h = math.ceil(bounds.Y) + 16
+	tt.frame.Size = UDim2.fromOffset(tt.w, tt.h)
+	tt.label.Text = text
+	tt.visible = true
+	tt.frame.Visible = true
+	placeTooltip(tt)
+	tween(tt.frame, { BackgroundTransparency = 0.08 }, 0.15)
+	tween(tt.stroke, { Transparency = 0.35 }, 0.15)
+	tween(tt.label, { TextTransparency = 0 }, 0.15)
+end
+
+function Library.HideTooltip()
+	tooltipToken += 1
+	local tt = tooltip
+	if not tt or not tt.visible then return end
+	tt.visible = false
+	tween(tt.frame, { BackgroundTransparency = 1 }, 0.12)
+	tween(tt.stroke, { Transparency = 1 }, 0.12)
+	tween(tt.label, { TextTransparency = 1 }, 0.12)
+	task.delay(0.14, function()
+		if not tt.visible then
+			tt.frame.Visible = false
+		end
+	end)
+end
+
+local function attachTooltip(obj, text)
+	if type(text) ~= "string" or text == "" then return end
+
+	obj.MouseEnter:Connect(function()
+		tooltipToken += 1
+		local token = tooltipToken
+		task.delay(TOOLTIP_DELAY, function()
+			if token == tooltipToken then
+				showTooltip(text)
+			end
+		end)
+	end)
+
+	obj.MouseMoved:Connect(function()
+		if tooltip and tooltip.visible then
+			placeTooltip(tooltip)
+		end
+	end)
+
+	obj.MouseLeave:Connect(Library.HideTooltip)
 end
 
 ----------------------------------------------------------------
@@ -576,6 +710,7 @@ end
 
 function Window:SetMinimized(state)
 	self._minimized = state and true or false
+	Library.HideTooltip()
 	self._minBtn.Text = self._minimized and "+" or "–"
 	self._scroll.Visible = not self._minimized
 	self.Main.Particles.Visible = not self._minimized
@@ -606,6 +741,8 @@ function Window:SetVisible(state)
 	self._fading = true
 
 	local main = self.Main
+
+	Library.HideTooltip()
 
 	if not state then
 		-- some: guarda os valores originais e leva tudo a 100% transparente
@@ -652,6 +789,7 @@ end
 function Window:Destroy(animated)
 	if self._destroyed then return end
 	self._destroyed = true
+	Library.HideTooltip()
 
 	for _, c in ipairs(self._conns) do
 		c:Disconnect()
@@ -694,6 +832,7 @@ end
 ----------------------------------------------------------------
 function Window:_openKeyPopup(label, keyData, onChange)
 	if self._popup or self._destroyed then return end
+	Library.HideTooltip()
 	self._listening = true
 	local T = Library.Theme
 
@@ -904,6 +1043,7 @@ function Window:_attachKeybind(row, body, opts, trigger)
 		Parent = keyBtn,
 	})
 	hookHover(keyBtn, keyBtn, keyStroke, false)
+	attachTooltip(keyBtn, opts.KeybindTooltip or "Clique para definir uma tecla de atalho")
 
 	local handle = {}
 
@@ -1035,6 +1175,7 @@ function Window:Button(opts)
 		bodyStroke.Transparency = 0.2
 	end
 	hookHover(body, body, bodyStroke, opts.Primary)
+	attachTooltip(body, opts.Tooltip)
 
 	local function fire()
 		pcallCallback(opts.Callback)
@@ -1103,6 +1244,7 @@ function Window:Toggle(opts)
 		Parent = body,
 	})
 	hookHover(hit, body, bodyStroke, false)
+	attachTooltip(hit, opts.Tooltip)
 
 	local state = false
 
@@ -1225,6 +1367,7 @@ function Window:Slider(opts)
 		Parent = body,
 	})
 	hookHover(hit, body, bodyStroke, false)
+	attachTooltip(hit, opts.Tooltip)
 
 	local value = min
 
